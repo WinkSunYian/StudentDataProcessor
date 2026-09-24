@@ -22,6 +22,7 @@ sessionid.txt
 # ---- 工具 / 编辑器 ----
 .kilo/
 .idea/
+.vscode/
 
 # ---- 系统文件 ----
 .DS_Store
