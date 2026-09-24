@@ -1,0 +1,22 @@
+{
+  "files.exclude": {
+    "**/.venv": true,
+    "**/venv": true,
+    "**/env": true,
+    "**/.env": true,
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  },
+  "python.analysis.exclude": ["**/.venv/**", "**/venv/**", "**/env/**"],
+  "code-runner.runInTerminal": true,
+  "code-runner.clearPreviousOutput": true,
+  "code-runner.executorMap": {
+    "python": "chcp 65001; $env:PYTHONIOENCODING=\"utf-8\"; $pythonPath -u $fullFileName"
+  },
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "source": "PowerShell",
+      "args": ["-NoExit", "-Command", "chcp 65001"]
+    }
+  }
+}

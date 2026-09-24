@@ -1,0 +1,29 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# ---- 虚拟环境 ----
+venv/
+.venv/
+env/
+.env
+
+# ---- 打包产物 (PyInstaller) ----
+build/
+dist/
+
+# ---- 运行时数据与凭据（含密码/Cookie/会话，禁止提交） ----
+data/
+sessionid.txt
+*.log
+
+# ---- 工具 / 编辑器 ----
+.kilo/
+.idea/
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
+desktop.ini
