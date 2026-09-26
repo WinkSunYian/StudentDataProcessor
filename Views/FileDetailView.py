@@ -217,26 +217,20 @@ class FileDetailView(QWidget):
         header = QHBoxLayout()
         title = QLabel("运行日志")
         title.setObjectName("classTitle")
-        self.log_toggle = QToolButton()
-        self.log_toggle.setText("收起")
-        self.log_toggle.setCheckable(True)
-        self.log_toggle.setChecked(True)
-        self.log_toggle.toggled.connect(self._toggle_logs)
+        self.log_clear_btn = QToolButton()
+        self.log_clear_btn.setText("清空日志")
         header.addWidget(title)
         header.addStretch(1)
-        header.addWidget(self.log_toggle)
+        header.addWidget(self.log_clear_btn)
         layout.addLayout(header)
         self.info_label = QPlainTextEdit()
         self.info_label.setReadOnly(True)
         self.info_label.setMaximumBlockCount(2000)
         self.info_label.setPlaceholderText("执行任务后，详细日志会显示在这里。")
         self.info_label.setMinimumHeight(190)
+        self.log_clear_btn.clicked.connect(self.info_label.clear)
         layout.addWidget(self.info_label)
         self.main_layout.addWidget(card, 1)
-
-    def _toggle_logs(self, visible: bool):
-        self.info_label.setVisible(visible)
-        self.log_toggle.setText("收起" if visible else "展开")
 
     def set_summary(self, class_name="", record_name="", total=None, active=None, term_number=None):
         display_name = class_name or "请选择一个班级"
