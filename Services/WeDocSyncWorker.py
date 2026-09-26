@@ -27,6 +27,10 @@ NUMBER_END = 32
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
+# wecom-cli.cmd 由 cmd.exe 执行，其命令行硬上限为 8191 字符，超出会报「命令行太长。」。
+# 这里按完整命令行（含 list2cmdline 对 JSON 内引号的翻倍）计长并留出余量。
+MAX_CMD_CHARS = 7900
+
 
 class WeDocSyncWorker(QObject):
     """企业微信在线文档后台同步 Worker"""
@@ -153,140 +157,142 @@ class WeDocSyncWorker(QObject):
         return result
 
     @staticmethod
-    def get_contiguous_ranges(numbers: list[int]) -> list[tuple[int, int]]:
-        if not numbers:
-            return []
-
-        numbers = sorted(numbers)
-        ranges = []
-        start = numbers[0]
-        previous = numbers[0]
-
-        for number in numbers[1:]:
-            if number == previous + 1:
-                previous = number
-                continue
-
-            ranges.append((start, previous))
-            start = number
-            previous = number
-
-        ranges.append((start, previous))
-        return ranges
-
-    @staticmethod
     def build_grid_data(
-        row_number: int,
-        start_number: int,
-        values: list,
-        online_start_column: int,
+        rows: list[int],
+        start_column: int,
+        end_column: int,
+        cells: dict[int, dict[int, str]],
     ) -> dict:
+        """构造一个矩形区块的 grid_data。
+
+        rows 为 1 基行号列表，start_column/end_column 为 0 基绝对列闭区间；
+        rows × 列区间内的每个单元格都必须已存在于 cells 中。
+        """
         return {
-            "start_row": row_number - 1,
-            "start_column": online_start_column + (start_number - NUMBER_START),
+            "start_row": rows[0] - 1,
+            "start_column": start_column,
             "rows": [
                 {
                     "values": [
                         {
                             "data_type": "TEXT",
-                            "cell_value": {"text": str(value).strip()},
+                            "cell_value": {"text": cells[row][column]},
                         }
-                        for value in values
+                        for column in range(start_column, end_column + 1)
                     ]
                 }
+                for row in rows
             ],
         }
 
-    def _sync_student(
+    @staticmethod
+    def build_cli_args(doc_id: str, sheet_id: str, grid_json: str) -> list[str]:
+        return [
+            "sheet",
+            "contents",
+            "update",
+            "--docid",
+            doc_id,
+            "--sheet-id",
+            sheet_id,
+            "--grid-data",
+            grid_json,
+        ]
+
+    def _command_length(
         self,
-        course_row: pd.Series,
-        homework_row: pd.Series,
-        course_number_columns: list[int],
-        homework_number_columns: list[int],
-        completed: int,
-        total: int,
-    ) -> tuple[str, str, str]:
-        """同步单个学生的数据（课程+作业，各自独立区间分别调用）。
+        rows: list[int],
+        start_column: int,
+        end_column: int,
+        cells: dict[int, dict[int, str]],
+    ) -> int:
+        """区块写入时实际交给 cmd.exe 的命令行长度。
 
-        返回值：(状态, 学号, 备注)
-        状态: success / skip / error
+        注意 list2cmdline 会把 JSON 内的双引号翻倍，因此不能只看 JSON 长度。
         """
-        student_id = course_row["学号"]
-        online_row = self.parse_student_row(student_id)
+        grid = self.build_grid_data(rows, start_column, end_column, cells)
+        grid_json = json.dumps(grid, ensure_ascii=False)
+        args = [WECOM_CLI, *self.build_cli_args(self.doc_id, self.sheet_id, grid_json)]
+        return len(subprocess.list2cmdline(args))
 
-        if online_row is None:
-            return "skip", student_id, "无法解析学号"
+    def _split_rows_to_fit(
+        self,
+        rows: list[int],
+        start_column: int,
+        end_column: int,
+        cells: dict[int, dict[int, str]],
+    ) -> list[list[int]]:
+        """按命令行长度上限把行切成若干块（二分查找最大可容纳行数，每块至少 1 行）。"""
+        chunks: list[list[int]] = []
+        rest = list(rows)
+        while rest:
+            low, high, take = 1, len(rest), 1
+            while low <= high:
+                mid = (low + high) // 2
+                if (
+                    self._command_length(rest[:mid], start_column, end_column, cells)
+                    <= MAX_CMD_CHARS
+                ):
+                    take = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            chunks.append(rest[:take])
+            rest = rest[take:]
+        return chunks
 
-        # 收集所有需要写入的区间：(start_number, end_number, online_start_column, source_row)
-        write_ranges = []
+    def pack_blocks(
+        self, cells: dict[int, dict[int, str]]
+    ) -> list[tuple[list[int], int, int]]:
+        """把稀疏单元格打包成最少的矩形区块。
 
-        course_non_empty = [
-            number
-            for number in course_number_columns
-            if self.is_non_empty(course_row[str(number)])
-        ]
-        if course_non_empty:
-            for start_number, end_number in self.get_contiguous_ranges(course_non_empty):
-                write_ranges.append(
-                    (start_number, end_number, ONLINE_START_COLUMN, course_row)
-                )
+        cells 形如 {1 基行号: {0 基绝对列: 文本}}，
+        返回 [(rows, start_column, end_column), ...]。
 
-        homework_non_empty = [
-            number
-            for number in homework_number_columns
-            if self.is_non_empty(homework_row[str(number)])
-        ]
-        if homework_non_empty:
-            for start_number, end_number in self.get_contiguous_ranges(homework_non_empty):
-                write_ranges.append(
-                    (start_number, end_number, HOMEWORK_ONLINE_START_COLUMN, homework_row)
-                )
+        每个区块都保证「区域内全部单元格都待写入」，因此不会覆盖未指定的单元格；
+        数据连续时自然合并成一块，遇到行断点或列断点才切开；
+        单个区块受命令行长度上限约束，超限时按行再切分。
+        """
+        remaining = {row: set(columns) for row, columns in cells.items() if columns}
+        blocks: list[tuple[list[int], int, int]] = []
 
-        if not write_ranges:
-            return "skip", student_id, "没有需要同步的数据"
+        while remaining:
+            row = min(remaining)
+            start_column = min(remaining[row])
+            end_column = start_column
+            while end_column + 1 in remaining[row]:
+                end_column += 1
 
-        # 逐个区间调用 wecom-cli（每个区间只写一行，避免越界）
-        for start_number, end_number, online_start_column, source_row in write_ranges:
-            values = [
-                source_row[str(number)]
-                for number in range(start_number, end_number + 1)
-            ]
-            grid_data = self.build_grid_data(
-                row_number=online_row,
-                start_number=start_number,
-                values=values,
-                online_start_column=online_start_column,
-            )
+            # 沿行号向下延伸：后续每一行都必须完整包含该列区间
+            rows = [row]
+            probe = row + 1
+            while probe in remaining and all(
+                column in remaining[probe]
+                for column in range(start_column, end_column + 1)
+            ):
+                rows.append(probe)
+                probe += 1
 
-            try:
-                self._run_wecom_cli(
-                    [
-                        "sheet",
-                        "contents",
-                        "update",
-                        "--docid",
-                        self.doc_id,
-                        "--sheet-id",
-                        self.sheet_id,
-                        "--grid-data",
-                        json.dumps(grid_data, ensure_ascii=False),
-                    ]
-                )
-            except Exception as exc:
-                return (
-                    "error",
-                    student_id,
-                    f"第 {online_row} 行 编号 {start_number}~{end_number} 失败: {exc}",
-                )
+            for chunk in self._split_rows_to_fit(rows, start_column, end_column, cells):
+                blocks.append((chunk, start_column, end_column))
+                for packed_row in chunk:
+                    remaining[packed_row].difference_update(
+                        range(start_column, end_column + 1)
+                    )
+                    if not remaining[packed_row]:
+                        del remaining[packed_row]
 
-        return "success", student_id, f"第 {online_row} 行"
+        return blocks
 
     def _sync_table(
         self,
         course_path: str,
         homework_path: str,
     ) -> tuple[int, int, int]:
-        """同步课程表+作业表，合并为一次 wecom-cli 调用。
+        """同步课程表+作业表：先收集全部待写单元格，再按连续区域分块写入。
+
+        连续的数据合并成一个矩形区块、只调用一次 wecom-cli，
+        只有遇到行或列断点才切开，因此调用次数远小于学生人数。
 
         返回值：(成功数, 跳过数, 失败数)
         """
@@ -343,8 +349,9 @@ class WeDocSyncWorker(QObject):
             if sid not in course_index:
                 all_student_ids.append(sid)
 
-        # 过滤出需要同步的行
-        tasks = []
+        # 收集所有待写单元格：{1 基行号: {0 基绝对列: 文本}}
+        cells: dict[int, dict[int, str]] = {}
+        student_rows: dict[str, int] = {}
         skip_count = 0
 
         for student_id in all_student_ids:
@@ -354,74 +361,85 @@ class WeDocSyncWorker(QObject):
             online_row = self.parse_student_row(student_id)
             if online_row is None:
                 skip_count += 1
+                logger.info(f"学号 {student_id} | 跳过 | 无法解析学号")
                 continue
 
-            course_non_empty = [
-                number
-                for number in course_number_columns
-                if course_row is not None
-                and self.is_non_empty(course_row[str(number)])
-            ]
-            homework_non_empty = [
-                number
-                for number in homework_number_columns
-                if homework_row is not None
-                and self.is_non_empty(homework_row[str(number)])
-            ]
+            row_cells: dict[int, str] = {}
+            for source_row, number_columns, online_start_column in (
+                (course_row, course_number_columns, ONLINE_START_COLUMN),
+                (homework_row, homework_number_columns, HOMEWORK_ONLINE_START_COLUMN),
+            ):
+                if source_row is None:
+                    continue
+                for number in number_columns:
+                    value = source_row[str(number)]
+                    if not self.is_non_empty(value):
+                        continue
+                    row_cells[online_start_column + (number - NUMBER_START)] = str(
+                        value
+                    ).strip()
 
-            if not course_non_empty and not homework_non_empty:
+            if not row_cells:
                 skip_count += 1
+                logger.info(f"学号 {student_id} | 跳过 | 没有需要同步的数据")
                 continue
 
-            tasks.append((student_id, course_row, homework_row))
+            cells.setdefault(online_row, {}).update(row_cells)
+            student_rows[student_id] = online_row
 
-        total = len(tasks)
+        # 把连续的单元格合并成矩形区块，每个区块只调用一次 wecom-cli
+        blocks = self.pack_blocks(cells)
         logger.info(
-            f"开始同步 | 待同步：{total} | 跳过：{skip_count}"
+            f"开始同步 | 待同步：{len(student_rows)} | 跳过：{skip_count} | 区块：{len(blocks)}"
         )
 
-        success_count = 0
-        error_count = 0
-        completed = 0
+        failed_blocks: set[int] = set()
 
-        for student_id, course_row, homework_row in tasks:
-            completed += 1
+        for index, (rows, start_column, end_column) in enumerate(blocks, start=1):
+            grid_data = self.build_grid_data(rows, start_column, end_column, cells)
+            label = (
+                f"行 {rows[0]}~{rows[-1]} 列 {start_column}~{end_column}"
+                f" | {len(rows)} 行 × {end_column - start_column + 1} 列"
+            )
 
             try:
-                status, result_student_id, message = self._sync_student(
-                    course_row,
-                    homework_row,
-                    course_number_columns,
-                    homework_number_columns,
-                    completed,
-                    total,
+                self._run_wecom_cli(
+                    self.build_cli_args(
+                        self.doc_id,
+                        self.sheet_id,
+                        json.dumps(grid_data, ensure_ascii=False),
+                    )
                 )
+                logger.info(f"[{index}/{len(blocks)}] 区块 {label} | 成功")
             except Exception as exc:
-                error_count += 1
-                logger.info(
-                    f"[{completed}/{total}] "
-                    f"学号 {student_id} | 失败 | 异常: {exc}"
+                failed_blocks.add(index - 1)
+                row_set = set(rows)
+                affected = sorted(
+                    sid for sid, row in student_rows.items() if row in row_set
                 )
-                continue
+                shown = ", ".join(affected[:10]) + ("…" if len(affected) > 10 else "")
+                logger.info(
+                    f"[{index}/{len(blocks)}] 区块 {label} | 失败"
+                    f" | 学号 {shown} | {exc}"
+                )
 
-            if status == "success":
-                success_count += 1
-                logger.info(
-                    f"[{completed}/{total}] "
-                    f"学号 {result_student_id} | 成功 | {message}"
-                )
-            elif status == "skip":
-                skip_count += 1
-                logger.info(
-                    f"[{completed}/{total}] "
-                    f"学号 {result_student_id} | 跳过 | {message}"
-                )
+        # 行号 -> 该行涉及的区块
+        row_blocks: dict[int, set[int]] = {}
+        for block_index, (rows, _start, _end) in enumerate(blocks):
+            for row in rows:
+                row_blocks.setdefault(row, set()).add(block_index)
+
+        success_count = 0
+        failed_students: list[str] = []
+        for student_id, online_row in student_rows.items():
+            if row_blocks.get(online_row, set()) & failed_blocks:
+                failed_students.append(student_id)
             else:
-                error_count += 1
-                logger.info(
-                    f"[{completed}/{total}] "
-                    f"学号 {result_student_id} | 失败 | {message}"
-                )
+                success_count += 1
+
+        error_count = len(failed_students)
+        if failed_students:
+            logger.info(f"写入失败的学号：{', '.join(sorted(failed_students))}")
 
         logger.info(
             f"同步完成 | 成功：{success_count} | "
