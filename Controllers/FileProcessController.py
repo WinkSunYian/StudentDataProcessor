@@ -2,8 +2,11 @@ import os
 import sys
 import shutil
 import subprocess
+from datetime import datetime
+
 import pandas as pd
 from PySide6.QtCore import QThread
+from PySide6.QtWidgets import QMessageBox
 from Services.Logger import Logger
 from Services.JihuaDownloadWorker import JihuaDownloadWorker
 from Services.JihuaApiClient import JihuaApiClient
@@ -13,6 +16,9 @@ from Views.SettingsDialog import SettingsDialog
 from Views.SheetIdDialog import SheetIdDialog
 
 logger = Logger.instance()
+
+# 数据超过该时长未更新时，同步企业微信前需要二次确认
+SYNC_STALE_THRESHOLD_SECONDS = 30 * 60
 
 
 class FileProcessController:
@@ -160,6 +166,43 @@ class FileProcessController:
         dlg = SheetIdDialog(self.dir_service, class_name, self.main_window)
         dlg.exec()
 
+    @staticmethod
+    def _parse_record_time(record_name: str) -> datetime | None:
+        try:
+            return datetime.strptime(record_name, "%Y%m%d_%H%M%S")
+        except (TypeError, ValueError):
+            return None
+
+    def _confirm_sync_if_stale(self) -> bool:
+        """最新数据超过半小时未更新时弹确认框,返回是否继续同步。"""
+        record_time = self._parse_record_time(self._current_record)
+        if record_time is None:
+            return True
+
+        age_seconds = (datetime.now() - record_time).total_seconds()
+        if age_seconds < SYNC_STALE_THRESHOLD_SECONDS:
+            return True
+
+        age_text = self.detail_view.format_record_time(self._current_record)
+        box = QMessageBox(self.main_window)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("数据可能不是最新的")
+        box.setText(
+            f"当前数据获取于 {age_text}（记录 {self._current_record}），确定要更新吗？"
+        )
+        confirm_btn = box.addButton("确定更新", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(confirm_btn)
+        box.exec()
+
+        if box.clickedButton() is confirm_btn:
+            return True
+
+        logger.info(
+            f"已取消同步:当前数据获取于 {age_text}(记录 {self._current_record})"
+        )
+        return False
+
     def on_sync_wedoc_clicked(self):
         if self._busy:
             return
@@ -189,6 +232,9 @@ class FileProcessController:
             return
         if not doc_id:
             logger.warn("当前班级未配置 DOC_ID,请先点击「配置」按钮")
+            return
+
+        if not self._confirm_sync_if_stale():
             return
 
         self._set_busy(True)

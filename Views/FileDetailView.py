@@ -114,7 +114,7 @@ class FileDetailView(QWidget):
         return card.findChildren(QLabel)[1]
 
     @staticmethod
-    def _format_record_time(record_name: str, now: datetime | None = None) -> str:
+    def format_record_time(record_name: str, now: datetime | None = None) -> str:
         if not record_name:
             return ""
         try:
@@ -137,7 +137,7 @@ class FileDetailView(QWidget):
 
     def _refresh_active_record_time(self):
         self.active_record_time_label.setText(
-            self._format_record_time(self._active_record_name)
+            self.format_record_time(self._active_record_name)
         )
 
     def _set_active_record(self, record_name: str):
