@@ -10,6 +10,12 @@ logger = Logger.instance()
 RECORD_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 RECORD_DIRNAME_PATTERN = re.compile(r"^\d{8}_\d{6}$")
 
+# 记录保留策略:当天最多 RECORD_KEEP_TODAY 条,
+# 前 1~7 天每天 RECORD_KEEP_PREVIOUS_PER_DAY 条,更早的全部删除(合计最多 9 条)
+RECORD_KEEP_TODAY = 2
+RECORD_KEEP_PREVIOUS_DAYS = 7
+RECORD_KEEP_PREVIOUS_PER_DAY = 1
+
 
 class DirectoryService:
     def __init__(self, data_root: str):
@@ -87,27 +93,65 @@ class DirectoryService:
             ]
         return []
 
-    def trim_records(self, class_name: str, keep: int = 6) -> int:
-        """保留最新的 N 条记录(按目录名 YYYYMMDD_HHMMSS 字典序即时间序),
-        删除多余的旧记录及其下的 split/ 子目录与 line.html。
+    @staticmethod
+    def select_records_to_keep(
+        records: list[str], today: datetime | None = None
+    ) -> set[str]:
+        """按「每天一条 + 当天最多两条」挑选要留下的记录名。
 
-        返回被删除的记录数。
+        规则:
+        - 当天:保留最新 RECORD_KEEP_TODAY 条;
+        - 前 1~7 天:每天只保留该天最晚的 RECORD_KEEP_PREVIOUS_PER_DAY 条;
+        - 8 天前及更早:全部丢弃。
+
+        目录名不是合法日期的一律保留(不清理);日期在未来(系统时钟异常)按当天处理。
+        该方法不碰磁盘,便于单独测试。
+        """
+        today_date = (today or datetime.now()).date()
+        keep: set[str] = set()
+        by_age: dict[int, list[str]] = {}
+
+        for name in records:
+            try:
+                day = datetime.strptime(name[:8], "%Y%m%d").date()
+            except ValueError:
+                keep.add(name)
+                continue
+            age = (today_date - day).days
+            if age < 0:
+                age = 0
+            by_age.setdefault(age, []).append(name)
+
+        for age, names in by_age.items():
+            if age == 0:
+                limit = RECORD_KEEP_TODAY
+            elif age <= RECORD_KEEP_PREVIOUS_DAYS:
+                limit = RECORD_KEEP_PREVIOUS_PER_DAY
+            else:
+                limit = 0
+            # 目录名 YYYYMMDD_HHMMSS 字典序即时间序,倒序后取最前的
+            keep.update(sorted(names, reverse=True)[:limit])
+
+        return keep
+
+    def trim_records(self, class_name: str) -> int:
+        """按天清理班级下的记录:前七天每天一条、当天最多两条、更早的全删。
+
+        删除多余的旧记录及其下的 split/ 子目录。返回被删除的记录数。
         """
         records = self.get_records_in_class(class_name)
-        if len(records) <= keep:
+        keep = self.select_records_to_keep(records)
+        to_delete = sorted((name for name in records if name not in keep), reverse=True)
+        if not to_delete:
             return 0
-
-        records_sorted = sorted(records, reverse=True)
-        to_delete = records_sorted[keep:]
-
-        import shutil as _shutil
 
         deleted = 0
         for name in to_delete:
             record_path = os.path.join(self.class_root, class_name, name)
             try:
-                _shutil.rmtree(record_path)
+                shutil.rmtree(record_path)
                 deleted += 1
+                logger.info(f"清理旧记录: {name}")
             except Exception as e:
                 logger.error(f"删除旧记录失败 {record_path}: {e}")
         return deleted

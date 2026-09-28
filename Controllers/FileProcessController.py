@@ -516,9 +516,11 @@ class FileProcessController:
             pass
 
         try:
-            removed = self.dir_service.trim_records(self._current_class, keep=6)
+            removed = self.dir_service.trim_records(self._current_class)
             if removed > 0:
-                logger.info(f"已清理 {removed} 条旧数据,当前班级保留最新 6 条")
+                logger.info(
+                    f"已清理 {removed} 条旧数据,保留规则:前七天每天 1 条 + 当天最多 2 条"
+                )
         except Exception as e:
             logger.error(f"清理旧数据异常: {e}")
 
