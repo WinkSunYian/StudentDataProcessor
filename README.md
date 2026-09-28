@@ -1,6 +1,6 @@
 # StudentDataProcessor
 
-基于 PyQt6 的桌面端工具,用于处理**追光鲸**导出的学员完课/作业数据。
+基于 PySide6 的桌面端工具,用于处理**追光鲸**导出的学员完课/作业数据。
 
 首次启动会创建 `%APPDATA%\StudentDataProcessor\` 工作目录,内含:
 
@@ -111,7 +111,7 @@ StudentDataProcessor/
 │   ├── ExcelExportWorker.py      #   后台拆分 Worker
 │   └── ExcelChartService.py      #   pyecharts 折线图
 │
-├── Views/                        # 视图层(PyQt6)
+├── Views/                        # 视图层(PySide6)
 │   ├── MainWindow.py             #   主窗口(QSplitter)
 │   ├── ClassTabBarView.py        #   顶部班级 tab + 新建按钮
 │   ├── FileListView.py           #   左侧记录列表
