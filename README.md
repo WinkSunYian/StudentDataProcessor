@@ -90,10 +90,14 @@
 ```dir
 StudentDataProcessor/
 ├── main.py                       # 程序入口
+├── StudentDataProcessor.bat      # 一键启动(venv 的 pythonw.exe 拉起 main.py)
+├── requirements.txt              # 依赖清单
+├── .gitignore                    # 忽略 data/ venv/ dist/ build/ *.spec 等
+├── README.md                     # 项目说明
 │
 ├── Bootstrap/                    # 启动编排
-│   ├── AppRunner.py
-│   └── AppOrchestrator.py
+│   ├── AppRunner.py              #   资源路径 / 全局样式 / 单实例检测 / 程序图标
+│   └── AppOrchestrator.py        #   组装服务与视图控制器,解析数据根目录
 │
 ├── Controllers/                  # 控制器层(MVC)
 │   ├── ClassController.py        #   班级 tab 增删 + 切换
@@ -101,10 +105,16 @@ StudentDataProcessor/
 │
 ├── Services/                     # 业务服务
 │   ├── DirectoryService.py       #   数据目录、班级、记录管理
+│   ├── Logger.py                 #   全局日志(Qt 信号分发到日志面板)
 │   ├── XiaoeTechClient.py        #   小鹅通 HTTP 客户端
 │   ├── XiaogetongSyncWorker.py   #   小鹅通同步后台任务
 │   ├── ShuatiApiClient.py        #   刷题系统 HTTP 客户端
+│   ├── ShuatiLoginWorker.py      #   刷题系统登录与 sessionid 校验
 │   ├── ShuatiSyncWorker.py       #   刷题系统同步后台任务
+│   ├── JihuaApiClient.py         #   计划学院 HTTP 客户端(登录/同步/下载)
+│   ├── JihuaLoginWorker.py       #   JSESSIONID 过期时自动重新登录
+│   ├── JihuaDownloadWorker.py    #   下载完课/作业 Excel
+│   ├── WeDocSyncWorker.py        #   企业微信在线文档分块写入
 │   ├── ExcelSyncService.py       #   同步任务调度(子线程)
 │   ├── ExcelSplitterService.py   #   拆分(完课/作业/完课作业)
 │   ├── ExcelExportService.py     #   同步后自动重新拆分
@@ -114,11 +124,12 @@ StudentDataProcessor/
 ├── Views/                        # 视图层(PySide6)
 │   ├── MainWindow.py             #   主窗口(QSplitter)
 │   ├── ClassTabBarView.py        #   顶部班级 tab + 新建按钮
-│   ├── FileListView.py           #   左侧记录列表
 │   ├── FileDetailView.py         #   右侧操作面板 + 日志区
-│   └── FileDropArea.py
+│   ├── SettingsDialog.py         #   配置中心(全局凭据)
+│   └── SheetIdDialog.py          #   企业微信 DOC_ID / SHEET_ID 弹窗
 │
-└── (项目内不再产生运行时数据,数据目录已移出,见下)
+└── Resources/                    # 打包随附资源
+    └── icon.ico                  #   程序图标(打包必须,否则没图标)
 ```
 
 运行时数据不在项目目录内,首次启动会创建 `%APPDATA%\StudentDataProcessor\`:
