@@ -9,6 +9,20 @@ from Views.MainWindow import MainWindow
 from Controllers.ClassController import ClassController
 from Controllers.FileProcessController import FileProcessController
 
+# 本地数据根目录名,位于 %APPDATA% 下
+DATA_ROOT_DIR_NAME = "StudentDataProcessor"
+
+
+def resolve_data_root() -> str:
+    """本地数据根目录:%APPDATA%\\StudentDataProcessor。
+
+    取不到 APPDATA(非 Windows 等)时退回旧规则:<程序目录>/data。
+    """
+    appdata = os.environ.get("APPDATA", "").strip()
+    if appdata:
+        return os.path.join(appdata, DATA_ROOT_DIR_NAME)
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "data")
+
 
 class AppOrchestrator:
     def __init__(self):
@@ -21,9 +35,7 @@ class AppOrchestrator:
         self.file_process_controller = None
 
     def setup(self):
-        main_file_path = os.path.abspath(sys.argv[0])
-        app_root_dir = os.path.dirname(main_file_path)
-        data_root_path = os.path.join(app_root_dir, "data")
+        data_root_path = resolve_data_root()
 
         self.directory_service = DirectoryService(data_root=data_root_path)
         self.excel_sync_service = ExcelSyncService()
@@ -31,6 +43,7 @@ class AppOrchestrator:
 
         self.main_window = MainWindow()
         self.main_window.get_file_detail_view().bind_global_logger(Logger.instance())
+        Logger.instance().info(f"本地数据目录: {data_root_path}")
 
         self.class_controller = ClassController(
             class_tab_bar_view=self.main_window.get_class_tab_bar_view(),

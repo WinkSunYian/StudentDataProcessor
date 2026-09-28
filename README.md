@@ -2,7 +2,7 @@
 
 基于 PyQt6 的桌面端工具,用于处理**追光鲸**导出的学员完课/作业数据。
 
-首次启动会创建 `StudentDataProcessor/data/` 工作目录,内含:
+首次启动会创建 `%APPDATA%\StudentDataProcessor\` 工作目录,内含:
 
 - `config.json` —— 保存小鹅通 Ecookie、刷题系统 sessionid
 - `class/` —— 班级目录(每个班级下放一份份 Excel 数据)
@@ -56,7 +56,7 @@
 1. 验证 JSESSIONID,过期则用钉钉账号自动重新登录。
 2. 触发计划学院服务器同步课程与作业数据(轮询直至就绪)。
 3. 下载最新的学员完课/作业 Excel。
-4. 保存到 `data/class/<班级名>/<YYYYMMDD_HHMMSS>/data.xlsx`。
+4. 保存到 `%APPDATA%\StudentDataProcessor\class\<班级名>\<YYYYMMDD_HHMMSS>\data.xlsx`。
 5. 根据期号自动选择小鹅通或刷题系统接口,同步额外学员数据。
 6. 自动拆分 Excel 为 `course.xlsx`、`homework.xlsx` 等。
 
@@ -64,7 +64,7 @@
 
 ### 5. 查看拆分数据
 
-点击 `打开拆分数据文件夹` 按钮 → 系统自动打开 `data/class/<班级名>/<记录目录>/split/`。
+点击 `打开拆分数据文件夹` 按钮 → 系统自动打开 `%APPDATA%\StudentDataProcessor\class\<班级名>\<记录目录>\split\`。
 
 ### 6. 绘制折线图
 
@@ -118,12 +118,18 @@ StudentDataProcessor/
 │   ├── FileDetailView.py         #   右侧操作面板 + 日志区
 │   └── FileDropArea.py
 │
-└── data/                         # 运行时工作目录(自动创建)
-    ├── config.json
-    └── class/
-        └── <班级名>/
-            └── <YYYYMMDD_HHMMSS>/   # 一份导入的 Excel 对应一个记录目录
-                ├── data.xlsx
-                └── split/           # 拆分后的输出目录
-                    ├── course.xlsx
+└── (项目内不再产生运行时数据,数据目录已移出,见下)
+```
+
+运行时数据不在项目目录内,首次启动会创建 `%APPDATA%\StudentDataProcessor\`:
+
+```dir
+%APPDATA%\StudentDataProcessor\     # 运行时工作目录(自动创建)
+├── config.json                     # 全局凭据
+└── class/
+    └── <班级名>/
+        └── <YYYYMMDD_HHMMSS>/      # 一份导入的 Excel 对应一个记录目录
+            ├── data.xlsx
+            └── split/              # 拆分后的输出目录
+                └── course.xlsx
 ```
