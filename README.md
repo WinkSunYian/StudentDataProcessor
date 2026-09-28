@@ -90,7 +90,6 @@
 ```dir
 StudentDataProcessor/
 ├── main.py                       # 程序入口
-├── StudentDataProcessor.bat      # 一键启动(venv 的 pythonw.exe 拉起 main.py)
 ├── requirements.txt              # 依赖清单
 ├── .gitignore                    # 忽略 data/ venv/ dist/ build/ *.spec 等
 ├── README.md                     # 项目说明
