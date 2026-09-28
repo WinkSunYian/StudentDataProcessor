@@ -6,7 +6,7 @@ from Views.FileDetailView import FileDetailView
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("逸安老师的学生数据中心")
+        self.setWindowTitle("逸安的学生数据中心")
         self.resize(1440, 900)
 
         self.central_widget = QWidget()
