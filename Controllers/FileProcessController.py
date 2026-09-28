@@ -81,7 +81,6 @@ class FileProcessController:
         self.detail_view.chart_btn.setEnabled(has_class_records and enabled)
         self.tab_bar_view.set_locked(self._busy)
         self.detail_view.settings_btn.setEnabled(enabled)
-        self.detail_view.update_btn.setEnabled(enabled)
         self.detail_view.config_btn.setEnabled(has_class and enabled)
         self.detail_view.sync_wedoc_btn.setEnabled(has_class and enabled)
 
