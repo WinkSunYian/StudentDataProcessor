@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from Services.DirectoryService import DirectoryService
+from version import APP_VERSION
 
 
 class SettingsDialog(QDialog):
@@ -98,6 +99,12 @@ class SettingsDialog(QDialog):
         form.addRow("sessionid（刷题系统登录凭证）:", self.session_id_input)
 
         layout.addWidget(form_widget)
+
+        # 版本号:排查问题/反馈前先确认这一行
+        self.version_label = QLabel(f"当前版本 v{APP_VERSION}")
+        self.version_label.setObjectName("pageSubtitle")
+        self.version_label.setContentsMargins(2, 6, 0, 0)
+        layout.addWidget(self.version_label)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)

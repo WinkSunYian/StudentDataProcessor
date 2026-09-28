@@ -75,6 +75,7 @@ class UpdateController:
         btn = self._manual_button()
         if btn is None:
             return
+        btn.setToolTip(f"当前版本 v{APP_VERSION} · 点击检查 GitHub 上的最新版本")
         btn.show()
         btn.clicked.connect(lambda: self.check(manual=True))
 
