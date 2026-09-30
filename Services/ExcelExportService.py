@@ -7,36 +7,42 @@ from Services.Logger import Logger
 
 logger = Logger.instance()
 
+# 课次状态 -> 输出字母:看课(直/录) 记 T,到记 D,缺记 F,销记 X
+COURSE_LETTERS = {"直": "T", "录": "T", "缺": "F", "到": "D", "销": "X"}
+# 作业状态 -> 输出字母:交了作业(作) 记 T,其余记 F
+HOMEWORK_LETTERS = {"作": "T"}
+# 完课只认这一个字母,「计数」与全勤作业表的筛选都按它算
+DONE_LETTER = "T"
+
 
 class ExcelExportService:
     """负责将 data.xlsx 解析拆分为课程看课表、作业提交表、全勤作业表并设置样式导出的服务类"""
 
     @staticmethod
-    def parse_course(val: str) -> bool:
-        """解析课程部分：是否包含 '直' 或 '录'"""
+    def parse_course(val: str) -> str:
+        """解析课程部分：直/录 -> T，到 -> D，缺 -> F，销 -> X（空值按 F 处理）"""
         if pd.isna(val):
-            return False
+            return "F"
         parts = str(val).split("/")
-        return parts[0] in ("直", "录") if len(parts) > 0 else False
+        return COURSE_LETTERS.get(parts[0], "F")
 
     @staticmethod
-    def parse_homework(val: str) -> bool:
-        """解析作业部分：是否包含 '作'"""
+    def parse_homework(val: str) -> str:
+        """解析作业部分：提交作业(作) -> T，其余 -> F"""
         if pd.isna(val):
-            return False
+            return "F"
         parts = str(val).split("/")
-        return parts[1] in ("作") if len(parts) > 1 else False
+        return HOMEWORK_LETTERS.get(parts[1], "F") if len(parts) > 1 else "F"
 
     def process_df(self, df: pd.DataFrame, target_cols: list, parse_func, count_col_name: str) -> pd.DataFrame:
-        """通用处理函数：进行布尔映射 -> 统计完成次数 -> 插入计数列 -> 标记 T/F"""
+        """通用处理函数：状态映射 -> 统计完课次数（只数 T） -> 插入计数列"""
         target = df[target_cols]
         mapper = target.map if hasattr(target, "map") else target.applymap
 
-        bool_df = mapper(parse_func)
-        counts = bool_df.sum(axis=1)
+        letter_df = mapper(parse_func)
+        counts = letter_df.eq(DONE_LETTER).sum(axis=1)
 
-        formatter = bool_df.map if hasattr(bool_df, "map") else bool_df.applymap
-        df[target_cols] = formatter(lambda value: "T" if value else "F")
+        df[target_cols] = letter_df
 
         name_idx = df.columns.get_loc("真实姓名")
         df.insert(loc=name_idx + 1, column=count_col_name, value=counts)
@@ -45,8 +51,8 @@ class ExcelExportService:
 
     @staticmethod
     def highlight_failed(val):
-        """F 单元格背景标红"""
-        if val == "F":
+        """不是完课(T)的单元格背景标红:F 缺席、D 到课、X 销课"""
+        if val != DONE_LETTER:
             return "background-color: #FFCCCC; color: red;"
         return ""
 

@@ -66,6 +66,18 @@
 
 点击 `打开拆分数据文件夹` 按钮 → 系统自动打开 `%APPDATA%\StudentDataProcessor\class\<班级名>\<记录目录>\split\`。
 
+`course.xlsx` 的课时列按出勤方式落一个字母,`计数` 与全勤作业表的筛选只统计 `T`:
+
+| 原始值 | 说明 | 输出 | 底色 |
+|------|------|------|------|
+| 直 | 直播 | `T` | 不标 |
+| 录 | 录播 | `T` | 不标 |
+| 到 | 到课 | `D` | 红 |
+| 缺 | 缺席 | `F` | 红 |
+| 销 | 销课 | `X` | 红 |
+
+`homework.xlsx` 不变:交了作业记 `T`(不标),其余记 `F`(标红)。
+
 ### 6. 绘制折线图
 
 点击 `绘制折线图` 按钮 → 程序读取当前班级下所有记录,生成时间轴折线图(html),并自动在浏览器中打开。
@@ -116,8 +128,7 @@ StudentDataProcessor/
 │   ├── JihuaDownloadWorker.py    #   下载完课/作业 Excel
 │   ├── WeDocSyncWorker.py        #   企业微信在线文档分块写入
 │   ├── ExcelSyncService.py       #   同步任务调度(子线程)
-│   ├── ExcelSplitterService.py   #   拆分(完课/作业/完课作业)
-│   ├── ExcelExportService.py     #   同步后自动重新拆分
+│   ├── ExcelExportService.py     #   拆分出完课表/作业表/全勤作业表
 │   ├── ExcelExportWorker.py      #   后台拆分 Worker
 │   └── ExcelChartService.py      #   pyecharts 折线图
 │
