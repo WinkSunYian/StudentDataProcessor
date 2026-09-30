@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (
     QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
+from Views.ShimmerButton import ShimmerButton
+
 
 class FileDetailView(QWidget):
     """留白优先的班级数据工作台。"""
@@ -156,8 +158,9 @@ class FileDetailView(QWidget):
             "01", "获取最新数据", "下载班级数据，并自动完成同步与拆分。"
         )
         process_layout = process_card.layout()
-        self.download_btn = QPushButton("下载最新数据")
+        self.download_btn = ShimmerButton("下载最新数据")
         self.download_btn.setObjectName("primaryButton")
+        self.download_btn.setToolTip("下载当前班级的最新数据")
         process_layout.addWidget(self.download_btn)
         cards.addWidget(process_card, 2)
 

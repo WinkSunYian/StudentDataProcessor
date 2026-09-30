@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from Views.ShimmerButton import ShimmerButton
+
 
 class ClassTabBarView(QFrame):
     def __init__(self, parent=None):
@@ -28,8 +30,13 @@ class ClassTabBarView(QFrame):
         self.add_class_btn.setFixedHeight(32)
         self.add_class_btn.setToolTip("添加新班级")
 
+        self.batch_sync_btn = ShimmerButton("全部同步")
+        self.batch_sync_btn.setFixedHeight(32)
+        self.batch_sync_btn.setToolTip("下载全部班期并同步至企业微信文档")
+
         self.layout.addWidget(self.tab_bar, stretch=1)
         self.layout.addWidget(self.add_class_btn)
+        self.layout.addWidget(self.batch_sync_btn)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -77,7 +84,10 @@ class ClassTabBarView(QFrame):
             self.tab_bar.removeTab(0)
 
     def set_locked(self, locked: bool):
-        self.tab_bar.setEnabled(not locked)
+        """下载/同步/批量期间锁定改动类入口。
+
+        只锁「新建班级」,tab 始终可以切换(切班只读,不干扰正在跑的流水线)。
+        """
         self.add_class_btn.setEnabled(not locked)
 
     def get_current_class_name(self) -> str:

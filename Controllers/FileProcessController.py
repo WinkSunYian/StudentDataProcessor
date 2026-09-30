@@ -14,6 +14,7 @@ from Services.JihuaLoginWorker import JihuaLoginWorker
 from Services.ShuatiLoginWorker import ShuatiLoginWorker, verify_sessionid
 from Views.SettingsDialog import SettingsDialog
 from Views.SheetIdDialog import SheetIdDialog
+from Controllers.BatchSyncController import BatchSyncController
 
 logger = Logger.instance()
 
@@ -40,7 +41,14 @@ class FileProcessController:
         self.chart_service = excel_chart_service
         self.class_controller = class_controller
 
-        self._busy = False
+        # 忙状态拆成两把锁:
+        #   _downloading —— 单班「下载 -> 同步 -> 拆分」流水线正在跑
+        #   _batching    —— 「全部同步」批量任务正在跑
+        self._downloading = False
+        self._batching = False
+        # 批量驱动器挂在流水线末端的完成回调,单班下载时为 None
+        self._pipeline_callback = None
+
         self._dl_thread = None
         self._dl_worker = None
         self._login_thread = None
@@ -49,6 +57,8 @@ class FileProcessController:
         self._shuati_login_worker = None
         self._current_class = ""
         self._current_record = ""
+
+        self.batch_controller = BatchSyncController(self)
 
         self.class_controller.class_changed.connect(self.on_class_changed)
 
@@ -60,13 +70,20 @@ class FileProcessController:
         self.detail_view.chart_btn.clicked.connect(self.on_chart_clicked)
         self.detail_view.config_btn.clicked.connect(self.on_config_clicked)
         self.detail_view.sync_wedoc_btn.clicked.connect(self.on_sync_wedoc_clicked)
+        self.tab_bar_view.batch_sync_btn.clicked.connect(self.on_batch_sync_clicked)
 
         self._refresh_button_states()
 
     # ---------------- 状态 ----------------
+    def is_busy(self) -> bool:
+        return self._downloading or self._batching
+
+    def set_batch_running(self, value: bool):
+        self._batching = bool(value)
+        self._refresh_button_states()
+
     def _refresh_button_states(self):
         has_class = bool(self._current_class)
-        has_record = bool(self._current_record)
         record_path = self._get_current_record_path()
         has_split = bool(record_path) and os.path.isdir(
             os.path.join(record_path, "split")
@@ -74,19 +91,47 @@ class FileProcessController:
         has_class_records = has_class and bool(
             self.dir_service.get_records_in_class(self._current_class)
         )
+        busy = self.is_busy()
 
-        enabled = not self._busy
-        self.detail_view.download_btn.setEnabled(has_class and enabled)
-        self.detail_view.open_split_dir_btn.setEnabled(has_split and enabled)
-        self.detail_view.chart_btn.setEnabled(has_class_records and enabled)
-        self.tab_bar_view.set_locked(self._busy)
-        self.detail_view.settings_btn.setEnabled(enabled)
-        self.detail_view.config_btn.setEnabled(has_class and enabled)
-        self.detail_view.sync_wedoc_btn.setEnabled(has_class and enabled)
+        # 浏览类:只受前置条件约束,下载/同步/批量期间照常可用
+        self.detail_view.open_split_dir_btn.setEnabled(has_split)
+        self.detail_view.chart_btn.setEnabled(has_class_records)
 
-    def _set_busy(self, busy: bool):
-        self._busy = busy
+        # 改动类:下载/同步/批量期间一律置灰
+        self.detail_view.settings_btn.setEnabled(not busy)
+        self.detail_view.config_btn.setEnabled(has_class and not busy)
+        self.detail_view.sync_wedoc_btn.setEnabled(has_class and not busy)
+        self.tab_bar_view.set_locked(busy)
+
+        # 下载按钮:始终亮着,用流光表达「正在下载」,点击由 handler 拦截
+        downloading = self._downloading or self._batching
+        self.detail_view.download_btn.setEnabled(has_class)
+        self.detail_view.download_btn.set_flowing(downloading)
+        self.detail_view.download_btn.setToolTip(
+            "正在下载数据,请稍候…" if downloading else "下载当前班级的最新数据"
+        )
+
+        # 顶栏「全部同步」:批量中必须保持可点(再点一次 = 请求停止)
+        batch_btn = self.tab_bar_view.batch_sync_btn
+        if self._batching:
+            batch_btn.setEnabled(True)
+            batch_btn.set_flowing(True)
+            batch_btn.setToolTip("正在批量同步,点击请求停止(当前班期跑完后停止)")
+        else:
+            batch_btn.setEnabled(not self._downloading)
+            batch_btn.set_flowing(False)
+            batch_btn.setToolTip("下载全部班期并同步至企业微信文档")
+
+    def _set_downloading(self, value: bool):
+        self._downloading = bool(value)
         self._refresh_button_states()
+
+    def _finish_pipeline(self, ok: bool, reason: str = "", record_dir: str = ""):
+        """单条下载流水线的唯一出口:复位状态并通知批量驱动器。"""
+        callback, self._pipeline_callback = self._pipeline_callback, None
+        self._set_downloading(False)
+        if callback is not None:
+            callback(ok, reason, record_dir)
 
     def _get_current_class_name(self) -> str:
         return self._current_class
@@ -151,13 +196,13 @@ class FileProcessController:
 
     # ---------------- 配置 ----------------
     def on_settings_clicked(self):
-        if self._busy:
+        if self.is_busy():
             return
         dlg = SettingsDialog(self.dir_service, self.main_window)
         dlg.exec()
 
     def on_config_clicked(self):
-        if self._busy:
+        if self.is_busy():
             return
         class_name = self._get_current_class_name()
         if not class_name:
@@ -204,7 +249,7 @@ class FileProcessController:
         return False
 
     def on_sync_wedoc_clicked(self):
-        if self._busy:
+        if self.is_busy():
             return
         class_name = self._get_current_class_name()
         if not class_name:
@@ -237,7 +282,7 @@ class FileProcessController:
         if not self._confirm_sync_if_stale():
             return
 
-        self._set_busy(True)
+        self._set_downloading(True)
         logger.info(
             f"开始同步企业微信在线文档(class={class_name}, doc_id={doc_id}, sheet_id={sheet_id})"
         )
@@ -250,7 +295,7 @@ class FileProcessController:
         )
 
     def _on_sync_wedoc_finished(self, success: bool, msg: str):
-        self._set_busy(False)
+        self._set_downloading(False)
         if success:
             logger.success(msg)
         else:
@@ -258,23 +303,58 @@ class FileProcessController:
 
     # ---------------- 班级切换 ----------------
     def on_class_changed(self, class_name: str):
-        if self._busy:
-            return
+        """切班只改视图,不干扰正在跑的流水线(流水线的班级名已快照)。"""
         self._current_class = class_name
         self.detail_view.set_summary(class_name=class_name)
         self._load_latest_record()
 
+    # ---------------- 全部同步(批量) ----------------
+    def on_batch_sync_clicked(self):
+        if self.batch_controller.running:
+            # 批量中再点一次 = 请求停止,当前班期跑完后停在队列处
+            self.batch_controller.request_stop()
+            return
+        if self.is_busy():
+            return
+        self.batch_controller.start()
+
     # ---------------- 下载最新数据 ----------------
     def on_download_clicked(self):
-        if self._busy:
+        if self.is_busy():
             return
         if not self._current_class:
             logger.warn("请先在顶部选择/新建一个班级")
             return
+        self._begin_download(self._current_class)
 
-        term_number = self.dir_service.extract_term_number(self._current_class)
+    def start_download_pipeline(self, class_name: str, on_finished=None):
+        """批量入口:对指定班期跑完整条「下载 -> 同步 -> 拆分」流水线。
+
+        on_finished(ok, reason, record_dir) 一定会被调用一次。
+        """
+        if self._downloading:
+            logger.warn("已有下载任务在执行,已忽略本次请求")
+            if on_finished:
+                on_finished(False, "已有下载任务在执行", "")
+            return
+        self._pipeline_callback = on_finished
+        self._begin_download(class_name)
+
+    def _begin_download(self, class_name: str):
+        """凭据校验 + 必要的自动登录,然后启动下载。班级名全程用快照。"""
+        self._set_downloading(True)
+        try:
+            self._auth_and_download(class_name)
+        except Exception as e:
+            logger.error(f"下载启动异常: {e}")
+            self._finish_pipeline(False, f"下载启动异常: {e}")
+
+    def _auth_and_download(self, class_name: str):
+        term_number = self.dir_service.extract_term_number(class_name)
         if term_number is None:
-            logger.error(f"无法从班级名 '{self._current_class}' 中解析出期号")
+            reason = f"无法从班级名 '{class_name}' 中解析出期号"
+            logger.error(reason)
+            self._finish_pipeline(False, reason)
             return
 
         config = self.dir_service.load_config()
@@ -313,10 +393,11 @@ class FileProcessController:
 
         if not jsessionid:
             if not dingtalk_account or not dingtalk_password:
-                logger.warn("JSESSIONID 已失效且未配置钉钉账号密码,请先更新配置")
+                reason = "JSESSIONID 已失效且未配置钉钉账号密码,请先更新配置"
+                logger.warn(reason)
+                self._finish_pipeline(False, reason)
                 return
             logger.info("正在通过钉钉账号密码获取新的 JSESSIONID...")
-            self._set_busy(True)
             self._login_thread = QThread()
             self._login_worker = JihuaLoginWorker(dingtalk_account, dingtalk_password)
             self._login_worker.moveToThread(self._login_thread)
@@ -326,13 +407,14 @@ class FileProcessController:
                 self._login_thread.quit()
                 self._login_thread.wait()
                 if not ok:
-                    self._set_busy(False)
                     logger.error(result)
+                    self._finish_pipeline(False, f"钉钉登录失败: {result}")
                     return
                 jsessionid = result
                 self.dir_service.save_config("JSESSIONID", jsessionid)
                 logger.success(f"已自动更新 JSESSIONID: {jsessionid}")
                 self._continue_download(
+                    class_name,
                     jsessionid,
                     term_number,
                     session_id,
@@ -345,6 +427,7 @@ class FileProcessController:
             return
 
         self._continue_download(
+            class_name,
             jsessionid,
             term_number,
             session_id,
@@ -354,6 +437,7 @@ class FileProcessController:
 
     def _continue_download(
         self,
+        class_name: str,
         jsessionid: str,
         term_number: int,
         session_id: str,
@@ -362,10 +446,11 @@ class FileProcessController:
     ):
         if term_number > 160 and not session_id:
             if not shuati_admin_id or not shuati_password:
-                logger.warn("刷题系统 sessionid 已失效且未配置管理员账号密码,请先更新配置")
+                reason = "刷题系统 sessionid 已失效且未配置管理员账号密码,请先更新配置"
+                logger.warn(reason)
+                self._finish_pipeline(False, reason)
                 return
             logger.info("正在通过管理员账号密码获取新的刷题系统 sessionid...")
-            self._set_busy(True)
             self._shuati_login_thread = QThread()
             self._shuati_login_worker = ShuatiLoginWorker(
                 shuati_admin_id, shuati_password
@@ -377,30 +462,29 @@ class FileProcessController:
                 self._shuati_login_thread.quit()
                 self._shuati_login_thread.wait()
                 if not ok:
-                    self._set_busy(False)
                     logger.error(result)
+                    self._finish_pipeline(False, f"刷题系统登录失败: {result}")
                     return
                 self.dir_service.save_config("sessionid", result)
                 logger.success(f"已自动更新刷题系统 sessionid: {result}")
-                self._start_download(jsessionid, term_number, result)
+                self._start_download(class_name, jsessionid, term_number, result)
 
             self._shuati_login_worker.finished.connect(on_shuati_login_finished)
             self._shuati_login_thread.start()
             return
 
-        self._start_download(jsessionid, term_number, session_id)
+        self._start_download(class_name, jsessionid, term_number, session_id)
 
     def _start_download(
-        self, jsessionid: str, term_number: int, session_id: str = ""
+        self, class_name: str, jsessionid: str, term_number: int, session_id: str = ""
     ):
-        self._set_busy(True)
         logger.info(f"开始下载 Py{term_number}期 最新数据...")
 
         self._dl_thread = QThread()
         self._dl_worker = JihuaDownloadWorker(
             jsessionid=jsessionid,
             term_number=term_number,
-            target_class=self._current_class,
+            target_class=class_name,
             dir_service=self.dir_service,
         )
         self._dl_worker.moveToThread(self._dl_thread)
@@ -410,35 +494,39 @@ class FileProcessController:
             self._dl_thread.quit()
             self._dl_thread.wait()
             if not ok:
-                self._set_busy(False)
                 logger.error(f"下载失败: {msg}")
+                self._finish_pipeline(False, f"下载失败: {msg}")
                 return
 
             logger.success(msg)
-            self._run_download_pipeline(tmp_xlsx_path, term_number, session_id)
+            self._run_download_pipeline(class_name, tmp_xlsx_path, term_number, session_id)
 
         self._dl_worker.finished.connect(on_dl_finished)
         self._dl_thread.start()
 
     def _run_download_pipeline(
-        self, tmp_xlsx_path: str, term_number: int, session_id: str = ""
+        self,
+        class_name: str,
+        tmp_xlsx_path: str,
+        term_number: int,
+        session_id: str = "",
     ):
         """下载完成后的串行流程:创建记录目录 -> 同步 -> 拆分 -> 收尾。
 
         任何一步失败都会:
           - 删除已创建的记录目录
           - 删除临时 xlsx
+          - 通过 _finish_pipeline 通知调用方(批量驱动器)
         """
         record_dir = ""
         try:
-            record_dir = self.dir_service.get_next_record_dir(self._current_class)
+            record_dir = self.dir_service.get_next_record_dir(class_name)
             shutil.copy2(tmp_xlsx_path, os.path.join(record_dir, "data.xlsx"))
             logger.info(f"临时记录已创建: {os.path.basename(record_dir)}")
         except Exception as e:
             logger.error(f"创建记录目录失败: {e}")
             self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-            self._set_busy(False)
-            self._refresh_button_states()
+            self._finish_pipeline(False, f"创建记录目录失败: {e}")
             return
 
         config = self.dir_service.load_config()
@@ -448,12 +536,11 @@ class FileProcessController:
             if not ok:
                 logger.error(f"自动同步失败: {msg}")
                 self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-                self._set_busy(False)
-                self._refresh_button_states()
+                self._finish_pipeline(False, f"自动同步失败: {msg}")
                 return
 
             logger.info("同步完成,开始生成拆分表...")
-            self._run_split_after_sync(tmp_xlsx_path, record_dir)
+            self._run_split_after_sync(class_name, tmp_xlsx_path, record_dir)
 
         try:
             if use_shuati:
@@ -461,10 +548,10 @@ class FileProcessController:
                     "sessionid", ""
                 ).strip()
                 if not shuati_session_id:
-                    logger.warn("下载完成,但未配置 sessionid,无法自动同步刷题系统")
+                    reason = "下载完成,但未配置 sessionid,无法自动同步刷题系统"
+                    logger.warn(reason)
                     self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-                    self._set_busy(False)
-                    self._refresh_button_states()
+                    self._finish_pipeline(False, reason)
                     return
                 self.sync_service.sync_shuati_data(
                     record_dir, shuati_session_id,
@@ -473,10 +560,10 @@ class FileProcessController:
             else:
                 e_cookie = config.get("Ecookie", "").strip()
                 if not e_cookie:
-                    logger.warn("下载完成,但未配置 Ecookie,无法自动同步小鹅通")
+                    reason = "下载完成,但未配置 Ecookie,无法自动同步小鹅通"
+                    logger.warn(reason)
                     self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-                    self._set_busy(False)
-                    self._refresh_button_states()
+                    self._finish_pipeline(False, reason)
                     return
                 self.sync_service.sync_xiaogetong_data(
                     record_dir, e_cookie,
@@ -485,38 +572,40 @@ class FileProcessController:
         except Exception as e:
             logger.error(f"启动同步异常: {e}")
             self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-            self._set_busy(False)
-            self._refresh_button_states()
+            self._finish_pipeline(False, f"启动同步异常: {e}")
 
-    def _run_split_after_sync(self, tmp_xlsx_path: str, record_dir: str):
+    def _run_split_after_sync(
+        self, class_name: str, tmp_xlsx_path: str, record_dir: str
+    ):
         try:
             from Services.ExcelExportService import ExcelExportService
             exp_ok, exp_msg = ExcelExportService().export_split_tables(record_dir)
             if not exp_ok:
                 logger.error(f"拆分表生成失败: {exp_msg}")
                 self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-                self._set_busy(False)
-                self._refresh_button_states()
+                self._finish_pipeline(False, f"拆分表生成失败: {exp_msg}")
                 return
             logger.success(f"拆分表已生成: {exp_msg}")
         except Exception as e:
             logger.error(f"拆分表生成异常: {e}")
             self._cleanup_failed_download(tmp_xlsx_path, record_dir)
-            self._set_busy(False)
-            self._refresh_button_states()
+            self._finish_pipeline(False, f"拆分表生成异常: {e}")
             return
 
-        self._finalize_download(tmp_xlsx_path, record_dir)
+        self._finalize_download(class_name, tmp_xlsx_path, record_dir)
 
-    def _finalize_download(self, tmp_xlsx_path: str, record_dir: str):
+    def _finalize_download(
+        self, class_name: str, tmp_xlsx_path: str, record_dir: str
+    ):
         """全部成功:清理临时文件,清理旧记录,刷新 UI。"""
         try:
             os.remove(tmp_xlsx_path)
         except OSError:
             pass
 
+        # 按流水线处理的班期清理,而不是「当前正在看的班期」
         try:
-            removed = self.dir_service.trim_records(self._current_class)
+            removed = self.dir_service.trim_records(class_name)
             if removed > 0:
                 logger.info(
                     f"已清理 {removed} 条旧数据,保留规则:前七天每天 1 条 + 当天最多 2 条"
@@ -524,13 +613,15 @@ class FileProcessController:
         except Exception as e:
             logger.error(f"清理旧数据异常: {e}")
 
-        self._current_record = os.path.basename(record_dir)
-        self.detail_view.set_active_record(self._current_record)
-        self._log_active_record_stats()
-        logger.success(f"数据流程完成: {self._current_record}")
+        record_name = os.path.basename(record_dir)
+        # 用户可能已经切到别的班期看别的数据,只有处理的正是当前班期时才刷视图
+        if class_name == self._current_class:
+            self._current_record = record_name
+            self.detail_view.set_active_record(record_name)
+            self._log_active_record_stats()
+        logger.success(f"数据流程完成: {record_name}")
 
-        self._set_busy(False)
-        self._refresh_button_states()
+        self._finish_pipeline(True, "", record_dir)
 
     def _cleanup_failed_download(self, tmp_xlsx_path: str, record_dir: str):
         """任意步骤失败时回滚:删除临时 xlsx + 临时记录目录。"""
@@ -548,8 +639,6 @@ class FileProcessController:
 
     # ---------------- 操作 ----------------
     def on_open_split_dir_clicked(self):
-        if self._busy:
-            return
         path = self._get_current_record_path()
         if not path:
             logger.warn("请先选择班级并下载数据")
@@ -570,8 +659,6 @@ class FileProcessController:
             logger.error(f"无法打开文件夹: {e}")
 
     def on_chart_clicked(self):
-        if self._busy:
-            return
         class_name = self._current_class
         if not class_name:
             logger.warn("请先选择班级并下载数据")
@@ -586,22 +673,20 @@ class FileProcessController:
             logger.warn("当前班级下没有数据记录,无法绘制图表")
             return
 
-        self._set_busy(True)
-        try:
-            logger.info(f"开始绘制 {class_name} 的时间轴折线图(共 {len(records)} 个时间点)...")
-            out = self.chart_service.generate_timeline_chart(class_path)
-            if out and os.path.exists(out):
-                logger.success(f"已生成: {out}")
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(out)
-                    elif sys.platform == "darwin":
-                        subprocess.run(["open", out])
-                    else:
-                        subprocess.run(["xdg-open", out])
-                except Exception as e:
-                    logger.error(f"无法打开文件: {e}")
-            else:
-                logger.error("折线图生成失败,请查看上方日志")
-        finally:
-            self._set_busy(False)
+        logger.info(
+            f"开始绘制 {class_name} 的时间轴折线图(共 {len(records)} 个时间点)..."
+        )
+        out = self.chart_service.generate_timeline_chart(class_path)
+        if out and os.path.exists(out):
+            logger.success(f"已生成: {out}")
+            try:
+                if sys.platform == "win32":
+                    os.startfile(out)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", out])
+                else:
+                    subprocess.run(["xdg-open", out])
+            except Exception as e:
+                logger.error(f"无法打开文件: {e}")
+        else:
+            logger.error("折线图生成失败,请查看上方日志")

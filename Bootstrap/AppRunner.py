@@ -7,6 +7,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from Bootstrap.AppOrchestrator import AppOrchestrator
+from Views.ShimmerButton import ShimmerButton
 
 
 def resource_path(relative_path: str) -> str:
@@ -271,6 +272,10 @@ class AppRunner:
                 "primary": "#2864DC",
                 "primary_hover": "#1F56C2",
             }
+        )
+
+        ShimmerButton.apply_theme(
+            {"primary": colors["primary"], "button": colors["button"]}
         )
 
         self.app.setStyleSheet(
