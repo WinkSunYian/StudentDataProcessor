@@ -12,6 +12,7 @@ from Services.JihuaDownloadWorker import JihuaDownloadWorker
 from Services.JihuaApiClient import JihuaApiClient
 from Services.JihuaLoginWorker import JihuaLoginWorker
 from Services.ShuatiLoginWorker import ShuatiLoginWorker, verify_sessionid
+from Services.MainThread import call_later
 from Views.SettingsDialog import SettingsDialog
 from Views.SheetIdDialog import SheetIdDialog
 from Controllers.BatchSyncController import BatchSyncController
@@ -403,24 +404,31 @@ class FileProcessController:
             self._login_worker.moveToThread(self._login_thread)
             self._login_thread.started.connect(self._login_worker.run)
 
+            # 信号连到普通 Python 函数时回调跑在 worker 线程里,
+            # 而失败分支会 _finish_pipeline -> 刷新按钮,必须回主线程
+            login_thread = self._login_thread
+
             def on_login_finished(ok: bool, result: str):
-                self._login_thread.quit()
-                self._login_thread.wait()
-                if not ok:
-                    logger.error(result)
-                    self._finish_pipeline(False, f"钉钉登录失败: {result}")
-                    return
-                jsessionid = result
-                self.dir_service.save_config("JSESSIONID", jsessionid)
-                logger.success(f"已自动更新 JSESSIONID: {jsessionid}")
-                self._continue_download(
-                    class_name,
-                    jsessionid,
-                    term_number,
-                    session_id,
-                    shuati_admin_id,
-                    shuati_password,
-                )
+                def _on_main():
+                    login_thread.quit()
+                    login_thread.wait()
+                    if not ok:
+                        logger.error(result)
+                        self._finish_pipeline(False, f"钉钉登录失败: {result}")
+                        return
+                    new_jsessionid = result
+                    self.dir_service.save_config("JSESSIONID", new_jsessionid)
+                    logger.success(f"已自动更新 JSESSIONID: {new_jsessionid}")
+                    self._continue_download(
+                        class_name,
+                        new_jsessionid,
+                        term_number,
+                        session_id,
+                        shuati_admin_id,
+                        shuati_password,
+                    )
+
+                call_later(_on_main)
 
             self._login_worker.finished.connect(on_login_finished)
             self._login_thread.start()
@@ -458,16 +466,21 @@ class FileProcessController:
             self._shuati_login_worker.moveToThread(self._shuati_login_thread)
             self._shuati_login_thread.started.connect(self._shuati_login_worker.run)
 
+            shuati_thread = self._shuati_login_thread
+
             def on_shuati_login_finished(ok: bool, result: str):
-                self._shuati_login_thread.quit()
-                self._shuati_login_thread.wait()
-                if not ok:
-                    logger.error(result)
-                    self._finish_pipeline(False, f"刷题系统登录失败: {result}")
-                    return
-                self.dir_service.save_config("sessionid", result)
-                logger.success(f"已自动更新刷题系统 sessionid: {result}")
-                self._start_download(class_name, jsessionid, term_number, result)
+                def _on_main():
+                    shuati_thread.quit()
+                    shuati_thread.wait()
+                    if not ok:
+                        logger.error(result)
+                        self._finish_pipeline(False, f"刷题系统登录失败: {result}")
+                        return
+                    self.dir_service.save_config("sessionid", result)
+                    logger.success(f"已自动更新刷题系统 sessionid: {result}")
+                    self._start_download(class_name, jsessionid, term_number, result)
+
+                call_later(_on_main)
 
             self._shuati_login_worker.finished.connect(on_shuati_login_finished)
             self._shuati_login_thread.start()
@@ -490,16 +503,24 @@ class FileProcessController:
         self._dl_worker.moveToThread(self._dl_thread)
         self._dl_thread.started.connect(self._dl_worker.run)
 
-        def on_dl_finished(ok: bool, msg: str, tmp_xlsx_path: str):
-            self._dl_thread.quit()
-            self._dl_thread.wait()
-            if not ok:
-                logger.error(f"下载失败: {msg}")
-                self._finish_pipeline(False, f"下载失败: {msg}")
-                return
+        dl_thread = self._dl_thread
 
-            logger.success(msg)
-            self._run_download_pipeline(class_name, tmp_xlsx_path, term_number, session_id)
+        def on_dl_finished(ok: bool, msg: str, tmp_xlsx_path: str):
+            def _on_main():
+                # 先收线程,后续整条流水线都在主线程上跑
+                dl_thread.quit()
+                dl_thread.wait()
+                if not ok:
+                    logger.error(f"下载失败: {msg}")
+                    self._finish_pipeline(False, f"下载失败: {msg}")
+                    return
+
+                logger.success(msg)
+                self._run_download_pipeline(
+                    class_name, tmp_xlsx_path, term_number, session_id
+                )
+
+            call_later(_on_main)
 
         self._dl_worker.finished.connect(on_dl_finished)
         self._dl_thread.start()

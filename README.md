@@ -133,6 +133,7 @@ StudentDataProcessor/
 ├── Services/                     # 业务服务
 │   ├── DirectoryService.py       #   数据目录、班级、记录管理
 │   ├── Logger.py                 #   全局日志(Qt 信号分发到日志面板)
+│   ├── MainThread.py             #   把 worker 回调投递回 GUI 主线程
 │   ├── XiaoeTechClient.py        #   小鹅通 HTTP 客户端
 │   ├── XiaogetongSyncWorker.py   #   小鹅通同步后台任务
 │   ├── ShuatiApiClient.py        #   刷题系统 HTTP 客户端
