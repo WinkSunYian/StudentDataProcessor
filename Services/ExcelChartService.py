@@ -57,6 +57,8 @@ __DEPS__
   }
   .page { flex: 1 1 auto; display: flex; min-height: 0; }
   #chart { flex: 1 1 auto; min-width: 0; }
+  /* 整列都可点,所以图区内一律用可点光标 */
+  #chart canvas { cursor: pointer; }
   .side {
     flex: 0 0 38%;
     max-width: 560px;
@@ -149,7 +151,7 @@ __DEPS__
 </head>
 <body>
 <div class="toolbar">
-  <span>点击左侧分布图中的任意一节，右侧两表切换为该节课的名单</span>
+  <span>点击左侧图中的任意一节，整列都可以点，右侧两表随之切换</span>
   <span class="cur">当前：<b id="curLesson"></b></span>
 </div>
 <div class="page">
@@ -197,6 +199,25 @@ OPTION.tooltip.formatter = function (ps) {
   if (map["作业分布"] !== undefined) h += "<br/>作业分布: " + map["作业分布"] + " 人";
   return h;
 };
+// 整列热区:每一节从上半顶端铺一张透明矩形一直盖到下半底端(clip:false 允许画出 grid)
+// 这样点柱子、点空白、点中间的课次标签,效果都一样 = 选中这一节
+var YMAX = OPTION.yAxis[0].max;
+function hitRender(params, api) {
+  var name = LESSONS[params.dataIndex];
+  if (!name) return null;
+  var w = api.size([1, 0])[0];
+  var x = api.coord([name, 0])[0];
+  var y0 = api.coord([name, 0])[1];
+  var y1 = api.coord([name, YMAX])[1];
+  return {
+    type: "rect",
+    shape: {x: x - w / 2, y: Math.min(y0, y1), width: w, height: 5000},
+    style: {fill: "rgba(0,0,0,0)"}
+  };
+}
+OPTION.series.forEach(function (s) {
+  if (s.name === "_hit") s.renderItem = hitRender;
+});
 var chart = echarts.init(
   document.getElementById("chart"), "white", {renderer: "canvas", locale: "ZH"}
 );
@@ -252,8 +273,10 @@ function tip(msg) {
   setTimeout(function () { el.style.opacity = "0"; }, 1800);
 }
 chart.on("click", function (params) {
-  if (!params || !DATA[params.name]) return;
-  select(params.name);
+  if (!params) return;
+  // 点柱子时 params.name 就是课次;点整列热区时靠 dataIndex 兜底
+  var name = params.name || LESSONS[params.dataIndex];
+  if (DATA[name]) select(name);
 });
 // 默认选中人数最多的一节,而不是空的第 32 节
 var BEST = LESSONS[0];
@@ -330,10 +353,11 @@ select(BEST);
         return output_html_path
 
     def generate_distribution_chart(self, class_dir_path: str) -> str:
-        """取最新一条记录,生成「分布柱状图 + 名单表格」的 distribution.html。
+        """取最新一条记录,生成「蝴蝶图 + 名单表格」的 distribution.html。
 
-        - 柱状图:X = 未开始/第1节~第N节,Y = 人数(不显示百分比)
-        - 悬停提示只显示人数;点击某节 → 下方两个表格列出该节的学员姓名
+        - 竖向蝴蝶图:上半 = 完课分布、下半 = 作业分布,共用课次轴与同一 y 上限
+        - 悬停提示只显示人数(不给百分比、不列名单)
+        - 整列可点:点柱子、点空白、点课次标签都切换到该节 → 右侧两表列出学员姓名
         - 两个表格各带「复制名单」,一键拷成一行一个姓名
         """
         if not os.path.isdir(class_dir_path):
@@ -373,7 +397,8 @@ select(BEST);
     def _build_distribution_html(self, record_name: str, m: dict) -> str:
         """竖向蝴蝶图:上半 = 完课分布、下半 = 作业分布,中间共用课次轴。
 
-        右侧上下两块表格分别对应完课/作业,点击图上任意一节联动表格。
+        右侧上下两块表格分别对应完课/作业。整列(含柱子、空白、课次标签)
+        铺了透明热区,点任意位置即选中该节并联动表格。
         """
         lessons = ["未开始"] + m["lesson_cols"]
         course = [len(x) for x in m["course_names"]]
@@ -394,7 +419,13 @@ select(BEST);
                 "textStyle": {"fontSize": 16, "color": "#1f2329", "fontWeight": 600},
                 "subtextStyle": {"fontSize": 12, "color": "#86909c"},
             },
-            "legend": {"top": 10, "right": 16, "textStyle": {"color": "#1f2329"}},
+            "legend": {
+                "top": 10,
+                "right": 16,
+                # 显式指定,否则整列热区序列也会出现在图例里
+                "data": ["完课分布", "作业分布"],
+                "textStyle": {"color": "#1f2329"},
+            },
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             # 两个 grid 的十字准星联动,悬停同一节课时上下同时高亮
             "axisPointer": {"link": [{"xAxisIndex": "all"}]},
@@ -461,6 +492,22 @@ select(BEST);
                     "data": assign,
                     "barMaxWidth": 14,
                     "itemStyle": {"color": "#00b578", "borderRadius": [0, 0, 3, 3]},
+                },
+                {
+                    # 整列点击热区:柱子又细又短很难点中,所以给每一节从上半顶端
+                    # 一路铺到下半底端(含中间课次标签带)一张透明矩形,
+                    # 点到这一列任意位置都等同于选中这一节。
+                    # renderItem 是 JS 函数,渲染前在页面里注入,见 _DISTRIBUTION_PAGE。
+                    "type": "custom",
+                    "name": "_hit",
+                    "xAxisIndex": 0,
+                    "yAxisIndex": 0,
+                    "data": lessons,
+                    "z": 5,
+                    "clip": False,
+                    "itemStyle": {"color": "rgba(0,0,0,0)"},
+                    "emphasis": {"disabled": True},
+                    "tooltip": {"show": False},
                 },
             ],
         }
