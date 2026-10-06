@@ -69,19 +69,6 @@ __DEPS__
     padding: 12px;
     border-left: 1px solid #eceef1;
   }
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 10px 18px;
-    border-top: 1px solid #eceef1;
-    border-bottom: 1px solid #eceef1;
-    background: #fafbfc;
-    font-size: 13px;
-    color: #646a73;
-  }
-  .toolbar .cur { margin-left: auto; color: #1f2329; }
-  .toolbar .cur b { color: #1456f0; }
   .panel {
     flex: 1 1 0;
     min-width: 0;
@@ -100,6 +87,7 @@ __DEPS__
     background: #f7f8fa;
     border-bottom: 1px solid #e5e6eb;
     font-weight: 600;
+    white-space: nowrap;
   }
   .panel > header .cnt { font-weight: 400; color: #86909c; font-size: 13px; }
   .panel > header button {
@@ -150,16 +138,12 @@ __DEPS__
 </style>
 </head>
 <body>
-<div class="toolbar">
-  <span>点击左侧图中的任意一节，整列都可以点，右侧两表随之切换</span>
-  <span class="cur">当前：<b id="curLesson"></b></span>
-</div>
 <div class="page">
   <div id="chart"></div>
   <aside class="side">
   <section class="panel">
     <header>
-      完课分布名单<em class="cnt" id="courseCount"></em>
+      <span id="courseTitle">完课名单</span><em class="cnt" id="courseCount"></em>
       <button type="button" onclick="copyNames('course')">复制名单</button>
     </header>
     <div class="scroll">
@@ -171,7 +155,7 @@ __DEPS__
   </section>
   <section class="panel">
     <header>
-      作业分布名单<em class="cnt" id="assignCount"></em>
+      <span id="assignTitle">作业名单</span><em class="cnt" id="assignCount"></em>
       <button type="button" onclick="copyNames('assign')">复制名单</button>
     </header>
     <div class="scroll">
@@ -238,7 +222,9 @@ function select(lesson) {
   if (!DATA[lesson]) return;
   CUR = lesson;
   var d = DATA[lesson];
-  document.getElementById("curLesson").textContent = lesson;
+  // 当前课次直接写进两个表头,不再单开一行状态条
+  document.getElementById("courseTitle").textContent = lesson + "完课名单";
+  document.getElementById("assignTitle").textContent = lesson + "作业名单";
   document.getElementById("courseCount").textContent = "（" + d.course.length + " 人）";
   document.getElementById("assignCount").textContent = "（" + d.assign.length + " 人）";
   fill("courseBody", d.course);
@@ -355,9 +341,12 @@ select(BEST);
     def generate_distribution_chart(self, class_dir_path: str) -> str:
         """取最新一条记录,生成「蝴蝶图 + 名单表格」的 distribution.html。
 
+        只读最新一条记录,不含任何时间轴 / 多记录遍历逻辑。
+
         - 竖向蝴蝶图:上半 = 完课分布、下半 = 作业分布,共用课次轴与同一 y 上限
         - 悬停提示只显示人数(不给百分比、不列名单)
-        - 整列可点:点柱子、点空白、点课次标签都切换到该节 → 右侧两表列出学员姓名
+        - 整列可点:点柱子、点空白、点课次标签都切换到该节
+        - 当前课次直接写进两个表头(如「第19节课完课名单」),不另设状态条
         - 两个表格各带「复制名单」,一键拷成一行一个姓名
         """
         if not os.path.isdir(class_dir_path):
