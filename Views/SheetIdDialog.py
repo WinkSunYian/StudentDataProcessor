@@ -7,12 +7,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QWidget,
+    QCheckBox,
 )
 from Services.DirectoryService import DirectoryService
 
 
 class SheetIdDialog(QDialog):
-    """配置当前班级的企业微信在线文档 DOC_ID 和 SHEET_ID(每个班级独立)。"""
+    """配置当前班级的企业微信在线文档 DOC_ID、SHEET_ID 及同步显示项(每班独立)。"""
 
     def __init__(self, dir_service: DirectoryService, class_name: str, parent=None):
         super().__init__(parent)
@@ -53,6 +54,10 @@ class SheetIdDialog(QDialog):
 
         layout.addWidget(form_widget)
 
+        # 上次活跃时间写进文档 AA 列时是否转成相对时间(拆分表里永远是绝对时间)
+        self.relative_time_check = QCheckBox("上次活跃时间显示为相对时间(如「3 小时前」)")
+        layout.addWidget(self.relative_time_check)
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         self.cancel_btn = QPushButton("取消")
@@ -69,6 +74,9 @@ class SheetIdDialog(QDialog):
         config = self.dir_service.load_class_config(self.class_name)
         self.doc_id_input.setText(config.get("DOC_ID", ""))
         self.sheet_id_input.setText(config.get("SHEET_ID", ""))
+        self.relative_time_check.setChecked(
+            str(config.get("RELATIVE_TIME", "")).strip() == "1"
+        )
 
     def _on_save_clicked(self):
         self.dir_service.save_class_config(
@@ -76,5 +84,10 @@ class SheetIdDialog(QDialog):
         )
         self.dir_service.save_class_config(
             self.class_name, "SHEET_ID", self.sheet_id_input.text().strip()
+        )
+        self.dir_service.save_class_config(
+            self.class_name,
+            "RELATIVE_TIME",
+            "1" if self.relative_time_check.isChecked() else "0",
         )
         self.accept()

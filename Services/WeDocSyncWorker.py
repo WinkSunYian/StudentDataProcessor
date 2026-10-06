@@ -7,6 +7,7 @@ import time
 import pandas as pd
 from PySide6.QtCore import QObject, Signal
 
+from Services.LastActiveService import LastActiveService
 from Services.Logger import Logger
 
 logger = Logger.instance()
@@ -16,10 +17,13 @@ SUBPROCESS_CREATION_FLAGS = 0x08000000 if os.name == "nt" else 0
 NODE_EXE = "node"
 WECOM_CLI = "wecom-cli.cmd"
 
-# 在线文档中课程表和作业表的起始列索引（从 0 开始计数）
-ONLINE_START_COLUMN = 27
+# 在线文档的列位(0 基索引):
+#   AA(26) = 上次活跃时间 | AC(28)~BH(59) = 课程 | BJ(61)~CO(92) = 作业
+#   AB(27) 是上一次插入新列后留下的间隔列,不同步
+LAST_ACTIVE_COLUMN = 26
+ONLINE_START_COLUMN = 28
 # 在线文档中作业表的起始列索引（从 0 开始计数）
-HOMEWORK_ONLINE_START_COLUMN = 60
+HOMEWORK_ONLINE_START_COLUMN = 61
 
 NUMBER_START = 1
 NUMBER_END = 32
@@ -38,14 +42,23 @@ class WeDocSyncWorker(QObject):
     progress = Signal(str)
     finished = Signal(bool, str)
 
-    def __init__(self, record_path: str, sheet_id: str, doc_id: str = ""):
+    def __init__(
+        self,
+        record_path: str,
+        sheet_id: str,
+        doc_id: str = "",
+        relative_time: bool = False,
+    ):
         super().__init__()
         self.record_path = record_path
         self.sheet_id = sheet_id.strip()
         self.doc_id = doc_id.strip()
+        # 上次活跃时间是否按相对时间(「3 小时前」)显示,由本班配置决定
+        self.relative_time = relative_time
         self.split_path = os.path.join(record_path, "split")
         self.course_path = os.path.join(self.split_path, "course.xlsx")
         self.homework_path = os.path.join(self.split_path, "homework.xlsx")
+        self.last_active_path = os.path.join(self.split_path, "last_active.xlsx")
 
     def _build_env(self) -> dict:
         env = os.environ.copy()
@@ -284,15 +297,51 @@ class WeDocSyncWorker(QObject):
 
         return blocks
 
+    def _load_last_active(self) -> dict[str, str]:
+        """读拆分目录里的 last_active.xlsx,返回 {学号: 要写进 AA 列的文本}。
+
+        文件不存在(老记录)就返回空 dict,本次同步跳过上次活跃时间列;
+        是否转成相对时间由本班配置的 relative_time 决定。
+        """
+        if not os.path.exists(self.last_active_path):
+            logger.info("未找到 last_active.xlsx,本次不同步「上次活跃时间」列")
+            return {}
+
+        try:
+            df = pd.read_excel(self.last_active_path, dtype=str)
+        except Exception as e:
+            logger.error(f"读取 last_active.xlsx 失败,跳过该列: {e}")
+            return {}
+
+        if "学号" not in df.columns or "上次活跃时间" not in df.columns:
+            logger.warn("last_active.xlsx 缺少学号/上次活跃时间列,跳过该列")
+            return {}
+
+        result: dict[str, str] = {}
+        for _, row in df.iterrows():
+            raw_sid = row["学号"]
+            raw_time = row["上次活跃时间"]
+            if pd.isna(raw_sid) or pd.isna(raw_time):
+                continue
+            sid = str(raw_sid).strip()
+            text = str(raw_time).strip()
+            if not sid or not text:
+                continue
+            if self.relative_time:
+                text = LastActiveService.format_relative(text)
+            result[sid] = text
+        return result
+
     def _sync_table(
         self,
         course_path: str,
         homework_path: str,
     ) -> tuple[int, int, int]:
-        """同步课程表+作业表：先收集全部待写单元格，再按连续区域分块写入。
+        """同步课程表+作业表+上次活跃时间：先收集全部待写单元格，再按连续区域分块写入。
 
         连续的数据合并成一个矩形区块、只调用一次 wecom-cli，
         只有遇到行或列断点才切开，因此调用次数远小于学生人数。
+        上次活跃时间单独占 AA 列，和课程块之间隔着 AB 间隔列，自然会切成独立区块。
 
         返回值：(成功数, 跳过数, 失败数)
         """
@@ -353,6 +402,7 @@ class WeDocSyncWorker(QObject):
         cells: dict[int, dict[int, str]] = {}
         student_rows: dict[str, int] = {}
         skip_count = 0
+        last_active_index = self._load_last_active()
 
         for student_id in all_student_ids:
             course_row = course_index.get(student_id)
@@ -378,6 +428,11 @@ class WeDocSyncWorker(QObject):
                     row_cells[online_start_column + (number - NUMBER_START)] = str(
                         value
                     ).strip()
+
+            # 上次活跃时间写进 AA 列;没有别的数据也要写,否则掉队的人反而同步不到
+            active_value = last_active_index.get(student_id)
+            if active_value:
+                row_cells[LAST_ACTIVE_COLUMN] = active_value
 
             if not row_cells:
                 skip_count += 1

@@ -9,6 +9,7 @@ from pyecharts import options as opts
 from pyecharts.charts import Bar, Line, Timeline
 from pyecharts.commons.utils import JsCode
 
+from Services.DirectoryService import DirectoryService
 from Services.Logger import Logger
 
 logger = Logger.instance()
@@ -279,10 +280,13 @@ select(BEST);
 """
 
     def generate_timeline_chart(self, class_dir_path: str) -> str:
-        """扫描班级目录下所有记录(按时间戳目录名),生成时间轴折线图。
+        """扫描班级目录下的记录(按时间戳目录名),生成时间轴折线图。
+
+        记录现在每天只增不删,所以时间轴不能全画,复用记录保留规则筛点:
+        当天取最新 2 条 + 前 1~7 天每天取最晚 1 条(8 天前的不画)。
 
         - X 轴:第1节课 ~ 第32节课
-        - 每个记录目录 = 时间轴上的一个节点(标签 = 目录名)
+        - 每个被选中的记录目录 = 时间轴上的一个节点(标签 = 目录名)
         - 每节点展示 3 条线(口径不变):
           完课率     = 连续完课到第 i 节(含)的人数占在读人数的比例(累计口径)
           作业完成率 = 连续完成作业到第 i 节(含)的人数占在读人数的比例(累计口径)
@@ -309,6 +313,16 @@ select(BEST);
             return ""
 
         now = datetime.now()
+        keep = DirectoryService.select_records_to_keep(record_dirs, now)
+        if len(keep) < len(record_dirs):
+            logger.info(
+                f"趋势图按近 7 天规则筛点:{len(keep)}/{len(record_dirs)} 个时间点"
+            )
+        record_dirs = [d for d in record_dirs if d in keep]
+        if not record_dirs:
+            logger.error("筛选后没有可用于绘制趋势图的记录")
+            return ""
+
         metrics_list = []
         for record_name in record_dirs:
             record_path = os.path.join(class_dir_path, record_name)

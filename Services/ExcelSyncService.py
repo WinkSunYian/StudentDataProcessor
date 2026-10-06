@@ -130,13 +130,25 @@ class ExcelSyncService:
         )
 
     def sync_wedoc_data(
-        self, record_path: str, sheet_id: str, doc_id: str, on_progress=None, on_finished=None
+        self,
+        record_path: str,
+        sheet_id: str,
+        doc_id: str = "",
+        relative_time: bool = False,
+        on_progress=None,
+        on_finished=None,
     ):
-        """开启后台子线程同步课程表和作业表到企业微信在线文档。"""
+        """开启后台子线程同步课程表、作业表和上次活跃时间到企业微信在线文档。
+
+        relative_time=True 时,上次活跃时间写成「3 小时前」这类相对时间,
+        否则写完整绝对时间(本班配置项)。
+        """
         if self._busy(on_finished):
             return False
         return self._start(
-            WeDocSyncWorker(record_path, sheet_id, doc_id), on_progress, on_finished
+            WeDocSyncWorker(record_path, sheet_id, doc_id, relative_time),
+            on_progress,
+            on_finished,
         )
 
     def export_split_tables(self, record_path: str, on_progress=None, on_finished=None):

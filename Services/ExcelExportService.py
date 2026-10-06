@@ -16,7 +16,7 @@ DONE_LETTER = "T"
 
 
 class ExcelExportService:
-    """负责将 data.xlsx 解析拆分为课程看课表、作业提交表、全勤作业表并设置样式导出的服务类"""
+    """负责将 data.xlsx 解析拆分为课程看课表、作业提交表、全勤作业表、上次活跃时间表并设置样式导出的服务类"""
 
     @staticmethod
     def parse_course(val: str) -> str:
@@ -166,6 +166,38 @@ class ExcelExportService:
             self.save_styled_excel(course_styled, course_path)
             self.save_styled_excel(homework_styled, homework_path)
             self.save_styled_excel(finished_course_homework_styled, finished_path)
+
+            # 上次活跃时间表(3 字段:学号 / 真实姓名 / 上次活跃时间)。
+            # 它依赖班级全部历史记录,算不出来时只记错误,不影响其余三张表。
+            try:
+                from Services.LastActiveService import LastActiveService
+
+                active_map = LastActiveService().compute(record_path)
+                active_rows = []
+                for _, row in data.iterrows():
+                    sid = "" if pd.isna(row["学号"]) else str(row["学号"]).strip()
+                    if not sid:
+                        continue
+                    name = (
+                        ""
+                        if pd.isna(row["真实姓名"])
+                        else str(row["真实姓名"]).strip()
+                    )
+                    active_rows.append(
+                        {
+                            "学号": sid,
+                            "真实姓名": name,
+                            "上次活跃时间": active_map.get(sid, ""),
+                        }
+                    )
+                active_df = pd.DataFrame(
+                    active_rows, columns=["学号", "真实姓名", "上次活跃时间"]
+                )
+                self.save_styled_excel(
+                    active_df.style, os.path.join(split_dir, "last_active.xlsx")
+                )
+            except Exception as e:
+                logger.error(f"上次活跃时间表生成失败(不影响其余拆分表): {e}")
 
             return True, "拆分导出表格成功！"
         except PermissionError:

@@ -46,6 +46,7 @@
 |------|------|----------|
 | **DOC_ID** | 企业微信在线文档(表格)的文档 ID | 在企业微信中打开目标群 → 群文件 → 在线文档 → 文档 URL 中提取 |
 | **SHEET_ID** | 对应工作表的 sheet ID | 在线文档 → 表格 → 工作表标签右键复制 sheet id |
+| **上次活跃时间显示为相对时间** | 勾上,文档 AA 列写 `3 小时前` 这种;不勾写 `2026-10-06 16:02`。**拆分表里永远是绝对时间** | 复选框 |
 
 保存后,该配置仅对当前选中的班级生效。
 
@@ -57,8 +58,10 @@
 2. 触发计划学院服务器同步课程与作业数据(轮询直至就绪)。
 3. 下载最新的学员完课/作业 Excel。
 4. 保存到 `%APPDATA%\StudentDataProcessor\class\<班级名>\<YYYYMMDD_HHMMSS>\data.xlsx`。
+   **每下载一次就留一份,旧记录永不删除** —— 历史越全,「上次活跃时间」的精度越高。
 5. 根据期号自动选择小鹅通或刷题系统接口,同步额外学员数据。
-6. 自动拆分 Excel 为 `course.xlsx`、`homework.xlsx` 等。
+6. 自动拆分为 `course.xlsx`、`homework.xlsx`、`finished_course_homework.xlsx`
+   和 `last_active.xlsx`。
 
 整个过程在后台线程执行。期间 `下载最新数据` 保持可点但显示**流光**动画(点击不生效),`同步企业微信`、两种配置、`+ 新建班级` 置灰;**切换班级、打开拆分数据、查看趋势图/分布图仍可正常使用**。完成后在**日志区**显示结果。
 
@@ -78,9 +81,30 @@
 
 `homework.xlsx` 不变:交了作业记 `T`(不标),其余记 `F`(标红)。
 
+#### last_active.xlsx — 上次活跃时间
+
+三个字段:`学号` / `真实姓名` / `上次活跃时间`,时间是**完整绝对时间**(`2026-10-06 16:02`)。
+
+口径:
+
+> - 把本班的记录**按时间从旧到新逐条推进**,每个学员维护一份「32 节课状态 + 32 次作业状态」的向量
+>   (`直/录→T、到→D、缺→F、销→X`,作业 `作→T`)。
+> - 只要向量发生**任何**变化,就把**那条记录**的时间记为他的上次活跃时间。
+>   等价于「拿最新一次跟上一次比,一样就再跟上上次比,一直比到第一次不一样」——变化只知道发生在
+>   这两条记录之间,取**较晚那条**(发现变化的那条)。
+> - 用完整状态向量而不是完课数,是为了不漏掉「正在看但这一节还没看完」这类不改变完课数的变化。
+> - 从头到尾没变过的学员 → 用他**首次出现的那条记录**时间。
+> - 增量索引 `<班级目录>/last_active_index.json`:首次运行把已有记录全量回填一遍,
+>   之后每来一条新记录只读它自己的 `data.xlsx`(约 0.3s),**记录再多也不会变慢**。
+> - 只统计 `学员学籍状态 = 在读` 的学员;各人数与拆分表一致。
+
 ### 6. 绘制折线图
 
-点击 `查看趋势图` 按钮 → 程序读取当前班级下所有记录,生成时间轴折线图(html),并自动在浏览器中打开。
+点击 `查看趋势图` 按钮 → 程序读取当前班级的记录,生成时间轴折线图(html),并自动在浏览器中打开。
+
+> 记录现在**每下载一次留一份、永不删除**,图里不可能全画,所以按老规则筛点:
+> **当天取最新 2 条 + 前 1~7 天每天取该天最晚 1 条**(8 天前的不画),
+> 日志区会打印 `趋势图按近 7 天规则筛点:N/M 个时间点`。
 
 ### 7. 查看分布图
 
@@ -95,9 +119,15 @@
 
 ### 8. 同步到企业微信在线文档
 
-点击 `同步企业微信` 按钮 → 程序读取拆分后的 `course.xlsx` 和 `homework.xlsx`,将学员的编号课时数据写入企业微信在线文档的对应单元格。
+点击 `同步企业微信` 按钮 → 程序读取拆分后的 `course.xlsx`、`homework.xlsx` 和 `last_active.xlsx`,
+写入企业微信在线文档的对应单元格。
 
 > - 同步前**必须**完成第 3 步的 DOC_ID 和 SHEET_ID 配置。
+> - 列位(0 基列号):`AA(26)` = 上次活跃时间、`AC(28)~BH(59)` = 第 1~32 节课、
+>   `BJ(61)~CO(92)` = 第 1~32 次作业,`AB(27)` 是间隔列不同步。
+>   行号由学号解析(尾部 `3 位数字 + 字母` +2 = 行号),和文档里现有行一一对齐。
+> - 上次活跃时间写绝对还是相对,看第 3 步那个复选框;`last_active.xlsx` 缺失时
+>   (老记录)只跳过 AA 列,课程/作业照常同步。
 > - 使用 `wecom-cli` 工具调用企业微信 API,请确保 Node.js 和 wecom-cli 环境已就绪(详见 `WeDocSyncWorker.py`)。
 > - 若最新数据获取超过 30 分钟,同步前会二次确认。
 
@@ -142,7 +172,7 @@ StudentDataProcessor/
 │   └── FileProcessController.py  #   下载 / 同步 / 拆分 / 图表 / 按钮权限矩阵
 │
 ├── Services/                     # 业务服务
-│   ├── DirectoryService.py       #   数据目录、班级、记录管理
+│   ├── DirectoryService.py       #   数据目录、班级、记录管理 + 趋势图筛点规则
 │   ├── Logger.py                 #   全局日志(Qt 信号分发到日志面板)
 │   ├── MainThread.py             #   把 worker 回调投递回 GUI 主线程
 │   ├── XiaoeTechClient.py        #   小鹅通 HTTP 客户端
@@ -153,11 +183,12 @@ StudentDataProcessor/
 │   ├── JihuaApiClient.py         #   计划学院 HTTP 客户端(登录/同步/下载)
 │   ├── JihuaLoginWorker.py       #   JSESSIONID 过期时自动重新登录
 │   ├── JihuaDownloadWorker.py    #   下载完课/作业 Excel
-│   ├── WeDocSyncWorker.py        #   企业微信在线文档分块写入
+│   ├── WeDocSyncWorker.py        #   企业微信在线文档分块写入(课程/作业/上次活跃时间)
 │   ├── ExcelSyncService.py       #   同步任务调度(子线程)
-│   ├── ExcelExportService.py     #   拆分出完课表/作业表/全勤作业表
+│   ├── ExcelExportService.py     #   拆分出完课表/作业表/全勤作业表/上次活跃时间表
 │   ├── ExcelExportWorker.py      #   后台拆分 Worker
-│   └── ExcelChartService.py      #   pyecharts 折线图
+│   ├── LastActiveService.py      #   上次活跃时间(跨记录比对 + 增量索引)
+│   └── ExcelChartService.py      #   pyecharts 折线图(趋势图/分布图)
 │
 ├── Views/                        # 视图层(PySide6)
 │   ├── MainWindow.py             #   主窗口(QSplitter)
@@ -165,7 +196,7 @@ StudentDataProcessor/
 │   ├── FileDetailView.py         #   右侧操作面板 + 日志区
 │   ├── SettingsDialog.py         #   配置中心(全局凭据)
 │   ├── ShimmerButton.py          #   流光忙碌态按钮(下载中/批量中)
-│   └── SheetIdDialog.py          #   企业微信 DOC_ID / SHEET_ID 弹窗
+│   └── SheetIdDialog.py          #   本班配置:DOC_ID / SHEET_ID / 活跃时间显示方式
 │
 └── Resources/                    # 打包随附资源
     └── icon.ico                  #   程序图标(打包必须,否则没图标)
@@ -178,8 +209,15 @@ StudentDataProcessor/
 ├── config.json                     # 全局凭据
 └── class/
     └── <班级名>/
-        └── <YYYYMMDD_HHMMSS>/      # 一份导入的 Excel 对应一个记录目录
+        ├── config.json             # 本班配置(DOC_ID / SHEET_ID / 活跃时间显示方式)
+        ├── last_active_index.json  # 上次活跃时间增量索引(自动维护)
+        ├── timeline.html           # 趋势图输出
+        ├── distribution.html       # 分布图输出
+        └── <YYYYMMDD_HHMMSS>/      # 每次下载一个记录目录,只增不删
             ├── data.xlsx
             └── split/              # 拆分后的输出目录
-                └── course.xlsx
+                ├── course.xlsx
+                ├── homework.xlsx
+                ├── finished_course_homework.xlsx
+                └── last_active.xlsx
 ```

@@ -10,8 +10,9 @@ logger = Logger.instance()
 RECORD_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 RECORD_DIRNAME_PATTERN = re.compile(r"^\d{8}_\d{6}$")
 
-# 记录保留策略:当天最多 RECORD_KEEP_TODAY 条,
-# 前 1~7 天每天 RECORD_KEEP_PREVIOUS_PER_DAY 条,更早的全部删除(合计最多 9 条)
+# 记录本身永不删除(每次下载都留一份,历史越全「上次活跃时间」越准),
+# 下面这套规则现在只用来给趋势图筛点:当天最多 RECORD_KEEP_TODAY 条,
+# 前 1~7 天每天只画该天最晚的 RECORD_KEEP_PREVIOUS_PER_DAY 条,更早的不画
 RECORD_KEEP_TODAY = 2
 RECORD_KEEP_PREVIOUS_DAYS = 7
 RECORD_KEEP_PREVIOUS_PER_DAY = 1
@@ -97,14 +98,15 @@ class DirectoryService:
     def select_records_to_keep(
         records: list[str], today: datetime | None = None
     ) -> set[str]:
-        """按「每天一条 + 当天最多两条」挑选要留下的记录名。
+        """按「每天一条 + 当天最多两条」挑选要显示的记录名(趋势图筛点用)。
 
-        规则:
-        - 当天:保留最新 RECORD_KEEP_TODAY 条;
-        - 前 1~7 天:每天只保留该天最晚的 RECORD_KEEP_PREVIOUS_PER_DAY 条;
-        - 8 天前及更早:全部丢弃。
+        记录文件不会被删除,这个规则只决定哪些记录画进时间轴:
 
-        目录名不是合法日期的一律保留(不清理);日期在未来(系统时钟异常)按当天处理。
+        - 当天:取最新 RECORD_KEEP_TODAY 条;
+        - 前 1~7 天:每天只取该天最晚的 RECORD_KEEP_PREVIOUS_PER_DAY 条;
+        - 8 天前及更早:不画。
+
+        目录名不是合法日期的一律保留;日期在未来(系统时钟异常)按当天处理。
         该方法不碰磁盘,便于单独测试。
         """
         today_date = (today or datetime.now()).date()
@@ -133,28 +135,6 @@ class DirectoryService:
             keep.update(sorted(names, reverse=True)[:limit])
 
         return keep
-
-    def trim_records(self, class_name: str) -> int:
-        """按天清理班级下的记录:前七天每天一条、当天最多两条、更早的全删。
-
-        删除多余的旧记录及其下的 split/ 子目录。返回被删除的记录数。
-        """
-        records = self.get_records_in_class(class_name)
-        keep = self.select_records_to_keep(records)
-        to_delete = sorted((name for name in records if name not in keep), reverse=True)
-        if not to_delete:
-            return 0
-
-        deleted = 0
-        for name in to_delete:
-            record_path = os.path.join(self.class_root, class_name, name)
-            try:
-                shutil.rmtree(record_path)
-                deleted += 1
-                logger.info(f"清理旧记录: {name}")
-            except Exception as e:
-                logger.error(f"删除旧记录失败 {record_path}: {e}")
-        return deleted
 
     def get_next_record_dir(self, class_name: str) -> str:
         """在该班级下生成一个新的时间戳记录目录(YYYYMMDD_HHMMSS),保证不重复。"""

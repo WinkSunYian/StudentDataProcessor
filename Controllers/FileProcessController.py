@@ -275,6 +275,8 @@ class FileProcessController:
         config = self.dir_service.load_class_config(class_name)
         sheet_id = config.get("SHEET_ID", "").strip()
         doc_id = config.get("DOC_ID", "").strip()
+        # 上次活跃时间是否转成相对时间,由本班配置决定
+        relative_time = str(config.get("RELATIVE_TIME", "")).strip() == "1"
         if not sheet_id:
             logger.warn("当前班级未配置 SHEET_ID,请先点击「配置」按钮")
             return
@@ -287,12 +289,14 @@ class FileProcessController:
 
         self._set_downloading(True)
         logger.info(
-            f"开始同步企业微信在线文档(class={class_name}, doc_id={doc_id}, sheet_id={sheet_id})"
+            f"开始同步企业微信在线文档(class={class_name}, doc_id={doc_id}, "
+            f"sheet_id={sheet_id}, 活跃时间={'相对' if relative_time else '绝对'})"
         )
         self.sync_service.sync_wedoc_data(
             record_path,
             sheet_id,
             doc_id,
+            relative_time=relative_time,
             on_progress=logger.info,
             on_finished=self._on_sync_wedoc_finished,
         )
@@ -620,21 +624,15 @@ class FileProcessController:
     def _finalize_download(
         self, class_name: str, tmp_xlsx_path: str, record_dir: str
     ):
-        """全部成功:清理临时文件,清理旧记录,刷新 UI。"""
+        """全部成功:清理临时文件,刷新 UI。
+
+        记录不再清理:每次下载都留一份,历史越全,「上次活跃时间」的精度越高;
+        趋势图那边自己按「近 7 天每天最晚一条 + 当天两条」筛点。
+        """
         try:
             os.remove(tmp_xlsx_path)
         except OSError:
             pass
-
-        # 按流水线处理的班期清理,而不是「当前正在看的班期」
-        try:
-            removed = self.dir_service.trim_records(class_name)
-            if removed > 0:
-                logger.info(
-                    f"已清理 {removed} 条旧数据,保留规则:前七天每天 1 条 + 当天最多 2 条"
-                )
-        except Exception as e:
-            logger.error(f"清理旧数据异常: {e}")
 
         record_name = os.path.basename(record_dir)
         # 用户可能已经切到别的班期看别的数据,只有处理的正是当前班期时才刷视图

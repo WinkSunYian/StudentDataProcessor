@@ -20,7 +20,10 @@ class ExcelExportWorker(QObject):
         exporter = ExcelExportService()
         success, msg = exporter.export_split_tables(self.record_path)
         if success:
-            logger.success("拆分表保存完成:course.xlsx / homework.xlsx / finished_course_homework.xlsx")
+            logger.success(
+                "拆分表保存完成:course.xlsx / homework.xlsx / "
+                "finished_course_homework.xlsx / last_active.xlsx"
+            )
             self.finished.emit(True, msg)
         else:
             self.finished.emit(False, msg)
