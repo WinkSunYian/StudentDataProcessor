@@ -165,14 +165,16 @@ class FileDetailView(QWidget):
         cards.addWidget(process_card, 2)
 
         results_card = self._make_action_card(
-            "02", "查看与分析", "打开拆分结果或查看班级学习趋势。"
+            "02", "查看与分析", "打开拆分结果、查看班级趋势与分布。"
         )
         results_layout = results_card.layout()
         result_buttons = QHBoxLayout()
         self.open_split_dir_btn = QPushButton("打开拆分数据")
         self.chart_btn = QPushButton("查看趋势图")
+        self.dist_btn = QPushButton("查看分布图")
         result_buttons.addWidget(self.open_split_dir_btn)
         result_buttons.addWidget(self.chart_btn)
+        result_buttons.addWidget(self.dist_btn)
         results_layout.addLayout(result_buttons)
         cards.addWidget(results_card, 3)
 

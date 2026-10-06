@@ -69,6 +69,7 @@ class FileProcessController:
             self.on_open_split_dir_clicked
         )
         self.detail_view.chart_btn.clicked.connect(self.on_chart_clicked)
+        self.detail_view.dist_btn.clicked.connect(self.on_distribution_clicked)
         self.detail_view.config_btn.clicked.connect(self.on_config_clicked)
         self.detail_view.sync_wedoc_btn.clicked.connect(self.on_sync_wedoc_clicked)
         self.tab_bar_view.batch_sync_btn.clicked.connect(self.on_batch_sync_clicked)
@@ -97,6 +98,7 @@ class FileProcessController:
         # 浏览类:只受前置条件约束,下载/同步/批量期间照常可用
         self.detail_view.open_split_dir_btn.setEnabled(has_split)
         self.detail_view.chart_btn.setEnabled(has_class_records)
+        self.detail_view.dist_btn.setEnabled(has_class_records)
 
         # 改动类:下载/同步/批量期间一律置灰
         self.detail_view.settings_btn.setEnabled(not busy)
@@ -697,7 +699,33 @@ class FileProcessController:
         logger.info(
             f"开始绘制 {class_name} 的时间轴折线图(共 {len(records)} 个时间点)..."
         )
-        out = self.chart_service.generate_timeline_chart(class_path)
+        self._open_chart_output(
+            self.chart_service.generate_timeline_chart(class_path),
+            "折线图生成失败,请查看上方日志",
+        )
+
+    def on_distribution_clicked(self):
+        class_name = self._current_class
+        if not class_name:
+            logger.warn("请先选择班级并下载数据")
+            return
+        class_path = os.path.join(self.dir_service.class_root, class_name)
+        if not os.path.isdir(class_path):
+            logger.warn("班级目录不存在")
+            return
+
+        if not self.dir_service.get_records_in_class(class_name):
+            logger.warn("当前班级下没有数据记录,无法绘制分布图")
+            return
+
+        logger.info(f"开始绘制 {class_name} 的分布图(取最新记录)...")
+        self._open_chart_output(
+            self.chart_service.generate_distribution_chart(class_path),
+            "分布图生成失败,请查看上方日志",
+        )
+
+    @staticmethod
+    def _open_chart_output(out: str, fail_text: str):
         if out and os.path.exists(out):
             logger.success(f"已生成: {out}")
             try:
@@ -710,4 +738,4 @@ class FileProcessController:
             except Exception as e:
                 logger.error(f"无法打开文件: {e}")
         else:
-            logger.error("折线图生成失败,请查看上方日志")
+            logger.error(fail_text)
