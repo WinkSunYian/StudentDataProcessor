@@ -27,6 +27,11 @@ ONLINE_START_COLUMN = 28
 # 在线文档中作业表的起始列索引（从 0 开始计数）
 HOMEWORK_ONLINE_START_COLUMN = 61
 
+# 写入时显式带上的单元格格式：服务端在不传 cell_format 时会把单元格重置为默认
+# 样式（水平默认左对齐），因此有值格必须声明水平居中，否则手动设置的居中每次
+# 同步都会被打回左对齐。垂直方向服务端默认就是居中，不写可省 46 字符/格。
+CELL_FORMAT_CENTER = {"horizontal_alignment": "HORIZONTAL_CENTER"}
+
 NUMBER_START = 1
 NUMBER_END = 32
 
@@ -84,6 +89,16 @@ def _cli_command(args: list[str]) -> list[str]:
     """把 wecom-cli 参数拼成完整子进程命令。"""
     prefix, _limit = resolve_wecom_cli()
     return [*prefix, *args]
+
+
+def _dumps_grid(grid: dict) -> str:
+    """把 grid_data 序列化成传给 wecom-cli 的 JSON 字符串。
+
+    分隔符必须紧凑：默认的 (', ', ': ') 每格要多花约 5 个空格，整份数据累计下来能多出
+    一两个区块（每个区块约 6 秒的服务端固定开销）。算命令行长度和实际发送都走这里，
+    保证长度计算与真实命令行一致。
+    """
+    return json.dumps(grid, ensure_ascii=False, separators=(",", ":"))
 
 
 class WeDocSyncWorker(QObject):
@@ -236,17 +251,27 @@ class WeDocSyncWorker(QObject):
 
         rows 为 1 基行号列表，start_column/end_column 为 0 基绝对列闭区间；
         rows × 列区间内的每个单元格都必须已存在于 cells 中。
+
+        两处压缩都是为了同一份数据装进更少的区块（命令行长度是全部成本）：
+        - 不写 data_type：官方 schema 要求按 data_type 填对应的 cell_value 字段，
+          但服务端会从 cell_value 形态推断类型（实测 {"text": ...} 正确存为文本），
+          省 21 字符/格。
+        - 空值格不带 cell_format：格子为空看不出对齐，写空纯粹是为了清掉文档里的
+          残留值，省 61 字符/格。
         """
+
+        def make_cell(text: str) -> dict:
+            if text == "":
+                return {"cell_value": {"text": ""}}
+            return {"cell_value": {"text": text}, "cell_format": CELL_FORMAT_CENTER}
+
         return {
             "start_row": rows[0] - 1,
             "start_column": start_column,
             "rows": [
                 {
                     "values": [
-                        {
-                            "data_type": "TEXT",
-                            "cell_value": {"text": cells[row][column]},
-                        }
+                        make_cell(cells[row][column])
                         for column in range(start_column, end_column + 1)
                     ]
                 }
@@ -280,7 +305,7 @@ class WeDocSyncWorker(QObject):
         注意 list2cmdline 会把 JSON 内的双引号翻倍，因此不能只看 JSON 长度。
         """
         grid = self.build_grid_data(rows, start_column, end_column, cells)
-        grid_json = json.dumps(grid, ensure_ascii=False)
+        grid_json = _dumps_grid(grid)
         args = self.build_cli_args(self.doc_id, self.sheet_id, grid_json)
         return len(subprocess.list2cmdline(_cli_command(args)))
 
@@ -579,7 +604,7 @@ class WeDocSyncWorker(QObject):
                     self.build_cli_args(
                         self.doc_id,
                         self.sheet_id,
-                        json.dumps(grid_data, ensure_ascii=False),
+                        _dumps_grid(grid_data),
                     )
                 )
                 logger.info(f"[{index}/{len(blocks)}] 区块 {label} | 成功")
