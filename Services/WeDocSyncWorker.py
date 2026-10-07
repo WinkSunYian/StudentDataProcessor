@@ -1,8 +1,10 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
+from functools import lru_cache
 
 import pandas as pd
 from PySide6.QtCore import QObject, Signal
@@ -34,6 +36,54 @@ RETRY_DELAY = 2
 # wecom-cli.cmd 由 cmd.exe 执行，其命令行硬上限为 8191 字符，超出会报「命令行太长。」。
 # 这里按完整命令行（含 list2cmdline 对 JSON 内引号的翻倍）计长并留出余量。
 MAX_CMD_CHARS = 7900
+
+# 直接调用 node.exe 时走的是 CreateProcess 而非 cmd.exe，硬上限 32767 字符，
+# 同一个区块能装下约 4 倍的数据，区块数随之下降。
+MAX_CMD_CHARS_DIRECT = 32000
+
+# wecom-cli.cmd 里那句 "…%dp0%\node_modules\@wecom\cli\bin\wecom.js"
+_CLI_SCRIPT_PATTERN = re.compile(
+    r"(node_modules[\\/]@wecom[\\/]cli[\\/]bin[\\/]wecom\.js)", re.IGNORECASE
+)
+
+
+@lru_cache(maxsize=1)
+def resolve_wecom_cli() -> tuple[tuple[str, ...], int]:
+    """解析 wecom-cli 的实际调用方式，返回 (命令前缀, 命令行长度上限)。
+
+    优先直调 `node.exe wecom.js`：这条路径不经 cmd.exe，上限从 8191 提到 32767，
+    同样一份数据需要的区块数因此大幅下降。解析不出脚本路径（CLI 没装、目录结构
+    变了）时回退成 `wecom-cli.cmd`，上限退回 7900，行为与历史版本一致。
+    """
+    fallback = ((WECOM_CLI,), MAX_CMD_CHARS)
+
+    try:
+        cmd_path = shutil.which(WECOM_CLI)
+        if not cmd_path:
+            return fallback
+
+        base_dir = os.path.dirname(os.path.abspath(cmd_path))
+        with open(cmd_path, "r", encoding="utf-8", errors="replace") as handle:
+            match = _CLI_SCRIPT_PATTERN.search(handle.read())
+        if not match:
+            return fallback
+
+        script_path = os.path.join(base_dir, *match.group(1).replace("\\", "/").split("/"))
+        if not os.path.isfile(script_path):
+            return fallback
+
+        # npm 全局目录里自带 node.exe 时优先用它，否则走 PATH
+        local_node = os.path.join(base_dir, f"node{'.exe' if os.name == 'nt' else ''}")
+        node = local_node if os.path.isfile(local_node) else NODE_EXE
+        return (node, script_path), MAX_CMD_CHARS_DIRECT
+    except OSError:
+        return fallback
+
+
+def _cli_command(args: list[str]) -> list[str]:
+    """把 wecom-cli 参数拼成完整子进程命令。"""
+    prefix, _limit = resolve_wecom_cli()
+    return [*prefix, *args]
 
 
 class WeDocSyncWorker(QObject):
@@ -84,8 +134,14 @@ class WeDocSyncWorker(QObject):
 
         logger.info(f"Node 版本：{result.stdout.strip()}")
 
+        prefix, cmd_limit = resolve_wecom_cli()
+        logger.info(
+            f"调用方式：{'直调 node.exe' if len(prefix) > 1 else 'wecom-cli.cmd'}"
+            f" | 命令行上限：{cmd_limit}"
+        )
+
         result = subprocess.run(
-            [WECOM_CLI, "--version"],
+            _cli_command(["--version"]),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -114,7 +170,7 @@ class WeDocSyncWorker(QObject):
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 result = subprocess.run(
-                    [WECOM_CLI, *args],
+                    _cli_command(args),
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -219,14 +275,19 @@ class WeDocSyncWorker(QObject):
         end_column: int,
         cells: dict[int, dict[int, str]],
     ) -> int:
-        """区块写入时实际交给 cmd.exe 的命令行长度。
+        """区块写入时实际交给操作系统（CreateProcess / cmd.exe）的命令行长度。
 
         注意 list2cmdline 会把 JSON 内的双引号翻倍，因此不能只看 JSON 长度。
         """
         grid = self.build_grid_data(rows, start_column, end_column, cells)
         grid_json = json.dumps(grid, ensure_ascii=False)
-        args = [WECOM_CLI, *self.build_cli_args(self.doc_id, self.sheet_id, grid_json)]
-        return len(subprocess.list2cmdline(args))
+        args = self.build_cli_args(self.doc_id, self.sheet_id, grid_json)
+        return len(subprocess.list2cmdline(_cli_command(args)))
+
+    @staticmethod
+    def _command_limit() -> int:
+        """当前调用方式对应的命令行长度上限。"""
+        return resolve_wecom_cli()[1]
 
     def _split_rows_to_fit(
         self,
@@ -236,6 +297,7 @@ class WeDocSyncWorker(QObject):
         cells: dict[int, dict[int, str]],
     ) -> list[list[int]]:
         """按命令行长度上限把行切成若干块（二分查找最大可容纳行数，每块至少 1 行）。"""
+        limit = self._command_limit()
         chunks: list[list[int]] = []
         rest = list(rows)
         while rest:
@@ -244,7 +306,7 @@ class WeDocSyncWorker(QObject):
                 mid = (low + high) // 2
                 if (
                     self._command_length(rest[:mid], start_column, end_column, cells)
-                    <= MAX_CMD_CHARS
+                    <= limit
                 ):
                     take = mid
                     low = mid + 1
@@ -253,6 +315,57 @@ class WeDocSyncWorker(QObject):
             chunks.append(rest[:take])
             rest = rest[take:]
         return chunks
+
+    @staticmethod
+    def fill_row_gaps(
+        cells: dict[int, dict[int, str]],
+    ) -> tuple[dict[int, dict[int, str]], int]:
+        """把每个列组的行区间补成连续矩形，返回 (补齐后的 cells, 补进去的格数)。
+
+        pack_blocks 要求「矩形内全部单元格都待写入」，所以学号断号、某格没值
+        都会把一块数据劈成两块，碎片段平均只有 2.5 行。这里对每个连续列组按
+        [行下限, 行上限] 把空洞补成空字符串，等于按本地数据清掉该格 —— 同步本
+        就是「以本地为准」的全量覆盖，只是过去会把无值的格子留成旧数据。
+
+        列组之间仍保持隔离（AC~BH 与 BJ~CO 中间隔着 AB 间隔列），不越界。
+        """
+        if not cells:
+            return {}, 0
+
+        columns: set[int] = set()
+        for row_values in cells.values():
+            columns.update(row_values)
+
+        # 按连续列分组：AA(26) | AC~BH(28~56) | BJ~CO(61~89)
+        groups: list[tuple[int, int]] = []
+        for column in sorted(columns):
+            if groups and column == groups[-1][1] + 1:
+                groups[-1] = (groups[-1][0], column)
+            else:
+                groups.append((column, column))
+
+        filled: dict[int, dict[int, str]] = {
+            row: dict(values) for row, values in cells.items()
+        }
+        filled_count = 0
+
+        for low, high in groups:
+            target_rows = [
+                row
+                for row, values in cells.items()
+                if any(low <= column <= high for column in values)
+            ]
+            if not target_rows:
+                continue
+
+            for row in range(min(target_rows), max(target_rows) + 1):
+                row_values = filled.setdefault(row, {})
+                for column in range(low, high + 1):
+                    if column not in row_values:
+                        row_values[column] = ""
+                        filled_count += 1
+
+        return filled, filled_count
 
     def pack_blocks(
         self, cells: dict[int, dict[int, str]]
@@ -442,7 +555,11 @@ class WeDocSyncWorker(QObject):
             cells.setdefault(online_row, {}).update(row_cells)
             student_rows[student_id] = online_row
 
-        # 把连续的单元格合并成矩形区块，每个区块只调用一次 wecom-cli
+        # 先把列组内的行空洞补成连续矩形，再合并成区块，每块只调用一次 wecom-cli
+        cells, filled_count = self.fill_row_gaps(cells)
+        if filled_count:
+            logger.info(f"矩形填充：补齐 {filled_count} 个无值单元格（按本地数据清空）")
+
         blocks = self.pack_blocks(cells)
         logger.info(
             f"开始同步 | 待同步：{len(student_rows)} | 跳过：{skip_count} | 区块：{len(blocks)}"
