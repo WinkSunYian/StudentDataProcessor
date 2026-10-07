@@ -113,6 +113,7 @@ class WeDocSyncWorker(QObject):
         sheet_id: str,
         doc_id: str = "",
         relative_time: bool = False,
+        center_align: bool = True,
     ):
         super().__init__()
         self.record_path = record_path
@@ -120,6 +121,8 @@ class WeDocSyncWorker(QObject):
         self.doc_id = doc_id.strip()
         # 上次活跃时间是否按相对时间(「3 小时前」)显示,由本班配置决定
         self.relative_time = relative_time
+        # 写入的单元格是否水平居中,由本班配置决定;关掉则不写格式、同步更快
+        self.center_align = center_align
         self.split_path = os.path.join(record_path, "split")
         self.course_path = os.path.join(self.split_path, "course.xlsx")
         self.homework_path = os.path.join(self.split_path, "homework.xlsx")
@@ -240,8 +243,8 @@ class WeDocSyncWorker(QObject):
                 result.append(number)
         return result
 
-    @staticmethod
     def build_grid_data(
+        self,
         rows: list[int],
         start_column: int,
         end_column: int,
@@ -252,17 +255,19 @@ class WeDocSyncWorker(QObject):
         rows 为 1 基行号列表，start_column/end_column 为 0 基绝对列闭区间；
         rows × 列区间内的每个单元格都必须已存在于 cells 中。
 
-        两处压缩都是为了同一份数据装进更少的区块（命令行长度是全部成本）：
+        几处压缩都是为了同一份数据装进更少的区块（命令行长度是全部成本）：
         - 不写 data_type：官方 schema 要求按 data_type 填对应的 cell_value 字段，
           但服务端会从 cell_value 形态推断类型（实测 {"text": ...} 正确存为文本），
           省 21 字符/格。
         - 空值格不带 cell_format：格子为空看不出对齐，写空纯粹是为了清掉文档里的
           残留值，省 61 字符/格。
+        - 本班关掉「写入的单元格水平居中」时有值格也不带格式，命令行短一截、区块数
+          随之下降（134 人约 197s → 161s）；代价是服务端把格子重置回默认的左对齐。
         """
 
         def make_cell(text: str) -> dict:
-            if text == "":
-                return {"cell_value": {"text": ""}}
+            if text == "" or not self.center_align:
+                return {"cell_value": {"text": text}}
             return {"cell_value": {"text": text}, "cell_format": CELL_FORMAT_CENTER}
 
         return {

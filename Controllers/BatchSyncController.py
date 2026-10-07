@@ -156,7 +156,9 @@ class BatchSyncController:
         config = self._fpc.dir_service.load_class_config(class_name)
         sheet_id = (config.get("SHEET_ID") or "").strip()
         doc_id = (config.get("DOC_ID") or "").strip()
-        relative_time = str(config.get("RELATIVE_TIME") or "").strip() == "1"
+        relative_time = str(config.get("RELATIVE_TIME") or "1").strip() == "1"
+        # 写入的单元格是否水平居中,由本班配置决定(缺省勾选;关掉则不碰格式、同步更快)
+        center_align = str(config.get("CENTER_ALIGN") or "1").strip() == "1"
 
         logger.info(f"【批量 {self._progress()}】同步企业微信在线文档 {class_name}")
         # 忙时 ExcelSyncService 会异步补发失败回调,同样走 _on_wedoc_done
@@ -165,6 +167,7 @@ class BatchSyncController:
             sheet_id,
             doc_id,
             relative_time=relative_time,
+            center_align=center_align,
             on_progress=logger.info,
             on_finished=self._on_wedoc_done,
         )

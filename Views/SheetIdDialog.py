@@ -58,6 +58,11 @@ class SheetIdDialog(QDialog):
         self.relative_time_check = QCheckBox("上次活跃时间显示为相对时间(如「3 小时前」)")
         layout.addWidget(self.relative_time_check)
 
+        # 写入的单元格是否水平居中;服务端不传格式会把格子重置成左对齐,
+        # 带上格式会让 134 人同步从约 90 秒涨到约 197 秒,关掉则不碰格式、同步更快
+        self.center_align_check = QCheckBox("写入的单元格水平居中(关闭可加快同步)")
+        layout.addWidget(self.center_align_check)
+
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         self.cancel_btn = QPushButton("取消")
@@ -74,8 +79,12 @@ class SheetIdDialog(QDialog):
         config = self.dir_service.load_class_config(self.class_name)
         self.doc_id_input.setText(config.get("DOC_ID", ""))
         self.sheet_id_input.setText(config.get("SHEET_ID", ""))
+        # 两个同步开关都缺省勾选:老班期的 config 里没有对应字段时按勾选处理
         self.relative_time_check.setChecked(
-            str(config.get("RELATIVE_TIME", "")).strip() == "1"
+            str(config.get("RELATIVE_TIME", "1")).strip() == "1"
+        )
+        self.center_align_check.setChecked(
+            str(config.get("CENTER_ALIGN", "1")).strip() == "1"
         )
 
     def _on_save_clicked(self):
@@ -89,5 +98,10 @@ class SheetIdDialog(QDialog):
             self.class_name,
             "RELATIVE_TIME",
             "1" if self.relative_time_check.isChecked() else "0",
+        )
+        self.dir_service.save_class_config(
+            self.class_name,
+            "CENTER_ALIGN",
+            "1" if self.center_align_check.isChecked() else "0",
         )
         self.accept()

@@ -275,8 +275,10 @@ class FileProcessController:
         config = self.dir_service.load_class_config(class_name)
         sheet_id = config.get("SHEET_ID", "").strip()
         doc_id = config.get("DOC_ID", "").strip()
-        # 上次活跃时间是否转成相对时间,由本班配置决定
-        relative_time = str(config.get("RELATIVE_TIME", "")).strip() == "1"
+        # 上次活跃时间是否转成相对时间,由本班配置决定(缺省勾选)
+        relative_time = str(config.get("RELATIVE_TIME", "1")).strip() == "1"
+        # 写入的单元格是否水平居中,由本班配置决定(缺省勾选;关掉则不碰格式、同步更快)
+        center_align = str(config.get("CENTER_ALIGN", "1")).strip() == "1"
         if not sheet_id:
             logger.warn("当前班级未配置 SHEET_ID,请先点击「配置」按钮")
             return
@@ -290,13 +292,15 @@ class FileProcessController:
         self._set_downloading(True)
         logger.info(
             f"开始同步企业微信在线文档(class={class_name}, doc_id={doc_id}, "
-            f"sheet_id={sheet_id}, 活跃时间={'相对' if relative_time else '绝对'})"
+            f"sheet_id={sheet_id}, 活跃时间={'相对' if relative_time else '绝对'}, "
+            f"居中={'开' if center_align else '关'})"
         )
         self.sync_service.sync_wedoc_data(
             record_path,
             sheet_id,
             doc_id,
             relative_time=relative_time,
+            center_align=center_align,
             on_progress=logger.info,
             on_finished=self._on_sync_wedoc_finished,
         )

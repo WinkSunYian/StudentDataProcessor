@@ -135,6 +135,7 @@ class ExcelSyncService:
         sheet_id: str,
         doc_id: str = "",
         relative_time: bool = False,
+        center_align: bool = True,
         on_progress=None,
         on_finished=None,
     ):
@@ -142,11 +143,13 @@ class ExcelSyncService:
 
         relative_time=True 时,上次活跃时间写成「3 小时前」这类相对时间,
         否则写完整绝对时间(本班配置项)。
+        center_align=True 时给有值格带上水平居中格式,关掉则不碰格式、同步更快
+        (本班配置项)。
         """
         if self._busy(on_finished):
             return False
         return self._start(
-            WeDocSyncWorker(record_path, sheet_id, doc_id, relative_time),
+            WeDocSyncWorker(record_path, sheet_id, doc_id, relative_time, center_align),
             on_progress,
             on_finished,
         )
